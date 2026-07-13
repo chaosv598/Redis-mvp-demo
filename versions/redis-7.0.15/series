@@ -3,3 +3,4 @@
 0001-hw-kunpeng-adapt-iouring.patch
 0002-perf-kunpeng-adapt-dtoe.patch
 0003-perf-jemalloc-arm64-pointer-tag-and-gc.patch
+0004-perf-rdb-fallback-aof.patch

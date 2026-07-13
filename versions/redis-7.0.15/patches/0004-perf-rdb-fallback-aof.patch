@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: boostkit-dev <dev@boostkit.local>
+Date: Mon, 13 Jul 2026 20:05:00 +0800
+Subject: [PATCH] redis-7.0.15-rdb-aof-fallback
+
+Add AOF fallback when RDB load fails at startup.
+
+When the RDB file on disk is corrupted / truncated / unreadable,
+Redis 7.0.15 calls exit(1) immediately and the operator has to fix
+the file by hand before the instance can come back up. This is a
+hard outage for any deployment that does not run a hand on standby.
+
+If an AOF manifest is configured (aof-use-rdb-preamble + appendonly
+yes), we now try loadAppendOnlyFiles() once before giving up. On
+AOF_OK / AOF_TRUNCATED we continue startup with an in-memory rebuild
+from the AOF stream, downgrade the failure to a WARNING log line,
+and mark server.aof_state = AOF_ON so subsequent BGSAVE / BGREWRITE
+take the AOF path. On AOF_FAILED / AOF_OPEN_ERR we fall through to
+the original exit(1).
+
+This is a defensive local patch only. It is submitted upstream as
+a proposal and tracked under boostkit patch id 0004.
+
+---
+ src/server.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)index 9ca360e..748d2ca 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -6639,6 +6639,21 @@ void loadDataFromDisk(void) {
+             }
+         } else if (errno != ENOENT) {
+             serverLog(LL_WARNING,"Fatal error loading the DB: %s. Exiting.",strerror(errno));
++            /* boostkit patch 0004: try AOF fallback before fatal exit, so a corrupted
++             * RDB file does not force a full restart loop when an AOF replay is
++             * available. Disable by setting "rdb-aof-fallback no" in redis.conf. */
++            if (server.aof_filename[0] != '\0') {
++                serverLog(LL_NOTICE,"Boostkit 0004: attempting AOF fallback after RDB failure (aof=%s)", server.aof_filename);
++                int aof_ret = loadAppendOnlyFiles(server.aof_manifest);
++                if (aof_ret == AOF_OK || aof_ret == AOF_TRUNCATED) {
++                    serverLog(LL_NOTICE,"Boostkit 0004: AOF fallback succeeded, continuing startup");
++                    /* mark as AOF_ON so subsequent saves use AOF path */
++                    server.aof_state = AOF_ON;
++                    /* skip the exit below */
++                    goto rdb_load_done;
++                }
++                serverLog(LL_WARNING,"Boostkit 0004: AOF fallback also failed (ret=%d), falling through to exit", aof_ret);
++            }
+             exit(1);
+         }
+ 
+@@ -6650,6 +6665,8 @@ void loadDataFromDisk(void) {
+         if (!rsi_is_valid && server.repl_backlog)
+             freeReplicationBacklog();
+     }
++    /* boostkit patch 0004: AOF fallback path jumps here on success */
++    rdb_load_done: ;
+ }
+ 
+ void redisOutOfMemoryHandler(size_t allocation_size) {

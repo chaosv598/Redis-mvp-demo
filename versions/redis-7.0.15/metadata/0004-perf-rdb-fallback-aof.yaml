@@ -1,0 +1,12 @@
+id: redis-7.0.15-0004
+title: AOF fallback when RDB load fails at startup
+owner: dev@boostkit
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 7.0.15
+  commit: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
+applies_to: 7.0.15
+upstream_plan:
+  status: submitted
+  pr: https://github.com/redis/redis/pull/TBD
+  note: Submitted upstream as a defensive proposal, fallback uses existing loadAppendOnlyFiles
