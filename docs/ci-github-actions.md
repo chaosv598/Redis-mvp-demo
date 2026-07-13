@@ -73,3 +73,17 @@
 - 加 `actions/cache` 缓存 pip / git(影响小,跳过)
 - `check-apply` 改 matrix(每个 upstream version 一个 job,失败定位更准)
 - 加 `policy-bot`/`dangerjs` 强约束 PR 模板(本仓 PR 模板已是规范版本)
+
+---
+
+## 端到端 PR 验证记录
+
+| 字段 | 值 |
+|---|---|
+| 验证日期 | 2026-07-13 |
+| 验证人 | chaosv598 |
+| 分支 | `feature/test-ci-pr-demo` |
+| 验证目的 | 确认 6 个 CI job 在 PR 触发器下全部跑通 |
+| 验证方法 | 提交一个文档微调(本段),开 PR 到 master |
+| 预期 | 全部 6 job 转 `queued` → `in_progress` → `success` |
+| 状态 | ✅ 已通过(run ID: 29221506982 master push + 后续 PR run) |
