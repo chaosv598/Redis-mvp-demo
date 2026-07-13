@@ -17,7 +17,9 @@ last_updated_at: 2026-07-10
 last_rebased_at: 2026-07-10
 applies_to:
   - 7.0.15
-applies_on_top: []
+applies_on_top:
+  - redis-7.0.15-0001
+  - redis-7.0.15-0002
 upstream:
   status: Submitted-Upstream
   url: https://github.com/redis/redis
