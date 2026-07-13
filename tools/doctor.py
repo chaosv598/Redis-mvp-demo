@@ -98,6 +98,11 @@ else:
             print(f"  ✓ {vdir.name}: {len(actual)} patches 一致")
 
 # 铁律 6:branch protection(本地)
+# 6a) 本地仓必须有 master(开发时硬要求)
+# 6b) CI 环境下(GITHUB_ACTIONS / GITEA_ACTIONS / GITHUB_ACTIONS=true)允许 PR 触发只 checkout 当前 ref
+#     此时 master 不在 local refs 中(但远端必然存在,否则 PR 不会通过),降为 soft warn
+import os as _os
+_in_ci = any(_os.environ.get(k) for k in ("GITHUB_ACTIONS", "GITEA_ACTIONS", "CI_PIPELINE_SOURCE", "GITLAB_CI"))
 try:
     refs = subprocess.check_output(
         ["git", "-C", str(ROOT), "for-each-ref", "--format=%(refname:short)"],
@@ -106,7 +111,10 @@ try:
 except subprocess.CalledProcessError:
     refs = []
 if "master" not in refs:
-    hard("BRANCH-NO-MASTER", "缺 master 分支")
+    if _in_ci:
+        soft("BRANCH-NO-MASTER-CI", "CI 模式:PR 触发时本地无 master(已自动降为 warn,远端必然存在)")
+    else:
+        hard("BRANCH-NO-MASTER", "缺 master 分支")
 
 # 铁律 7:CI 配置
 ci_path = ROOT / ".gitee-ci.yml"
