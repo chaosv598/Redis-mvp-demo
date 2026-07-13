@@ -110,7 +110,6 @@ import yaml, sys
 with open('$meta') as f: m = yaml.safe_load(f)
 m['status'] = 'Validated'
 m['last_rebased_at'] = '$TODAY'
-m['last_updated_at'] = '$TODAY'
 with open('$meta', 'w') as f: yaml.dump(m, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 "
     done

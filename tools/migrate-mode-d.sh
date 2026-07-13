@@ -72,7 +72,6 @@ owner:
   team: 待填
   person: 待填
 created_at: $(date +%Y-%m-%d)
-last_updated_at: $(date +%Y-%m-%d)
 applies_to:
   - $VER
 upstream:
