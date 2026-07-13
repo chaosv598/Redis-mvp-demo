@@ -131,4 +131,12 @@ for e in errors:
 for w in warns:
     print(f"  ⚠ {w['code']}: {w['msg']}")
 
-sys.exit(1 if errors else 2 if warns else 0)
+# 退出码策略:
+# - 本地: 0 全过 / 1 有 hard error / 2 有 warn(让开发者意识到)
+# - CI  : 0 全过或仅有 warn(soft 不阻塞 merge) / 1 有 hard error(必须 fail)
+# 检测 CI 模式用 GITHUB_ACTIONS / GITEA_ACTIONS / GITLAB_CI 等环境变量
+if errors:
+    sys.exit(1)
+if _in_ci:
+    sys.exit(0)  # CI 模式:warn 不阻塞
+sys.exit(0 if not warns else 2)
