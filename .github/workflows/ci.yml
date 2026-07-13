@@ -1,0 +1,117 @@
+# BoostKit Patch v5 MVP —— GitHub Actions CI 4 步必跑
+# 翻译自 .gitee-ci.yml(2026-07-10)
+# 触发: push to master, pull_request, workflow_dispatch(手动)
+
+name: boostkit-v5-ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# 允许同 PR 内部重入(避免旧的 run 占用并发名额)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 默认所有 job ubuntu-latest(GitHub 公共仓库免费 runner)
+jobs:
+  # ===========================================
+  # STAGE 1: lint —— doctor / lint / check-series
+  # ===========================================
+  doctor:
+    name: doctor (7 铁律自检)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pyyaml
+        run: pip install pyyaml --quiet
+      - name: Run doctor
+        run: python tools/doctor.py
+
+  lint:
+    name: lint (boostkit.yaml schema)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pyyaml
+        run: pip install pyyaml --quiet
+      - name: Run lint
+        run: python tools/lint.py boostkit.yaml
+
+  check-series:
+    name: check-series (series ↔ patches/ 一致)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run check-series
+        run: python tools/check-series.py
+
+  # ===========================================
+  # STAGE 2: apply —— check-apply(从干净 upstream 重放)
+  # ===========================================
+  check-apply:
+    name: check-apply (干净 upstream apply)
+    runs-on: ubuntu-latest
+    # check-apply 需要拉 github.com/redis/redis 完整 tarball+checkout,网络慢/失败不算仓治理问题
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run check-apply
+        run: bash tools/check-apply.sh
+      - name: Upload reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-apply-reports
+          path: versions/*/reports/
+          if-no-files-found: ignore
+
+  # ===========================================
+  # STAGE 3: owners —— check-owners(强制双签)
+  # ===========================================
+  check-owners:
+    name: check-owners (OWNERS ≥ 2 双签)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run check-owners
+        run: python tools/check-owners.py OWNERS
+
+  # ===========================================
+  # STAGE 4: tag 规范(可选,选跑)
+  # ===========================================
+  check-tag:
+    name: check-tag (tag 命名规范)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        with:
+          fetch-depth: 0
+        uses: actions/checkout@v4
+      - name: Run check-tag
+        run: bash tools/check-tag.sh
