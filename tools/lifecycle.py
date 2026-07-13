@@ -127,7 +127,6 @@ def cmd_set(patch_id, new_status, force=False):
         print(f"  强制转换请加 --force(将跳过校验,直接写入)")
         return 1
     m["status"] = new_status
-    m["last_updated_at"] = datetime.date.today().isoformat()
     yp.write_text(yaml.safe_dump(m, sort_keys=False, allow_unicode=True, default_flow_style=False))
     print(f"  ✓ {yp.relative_to(ROOT)}: {cur} -> {new_status}")
     # 状态转换后续动作提示
@@ -155,7 +154,6 @@ def cmd_mark_rebased(patch_id, date_str):
         print(f"  ✗ 找不到 patch: {patch_id}")
         return 1
     m["last_rebased_at"] = date_str
-    m["last_updated_at"] = date_str
     yp.write_text(yaml.safe_dump(m, sort_keys=False, allow_unicode=True, default_flow_style=False))
     print(f"  ✓ {yp.relative_to(ROOT)}: last_rebased_at = {date_str}")
     return 0
@@ -171,7 +169,6 @@ def cmd_link_pr(patch_id, pr_url):
     m["upstream"]["pr"] = pr_url
     m["upstream"]["status"] = "Submitted-Upstream"
     m["status"] = "Submitted-Upstream"
-    m["last_updated_at"] = datetime.date.today().isoformat()
     yp.write_text(yaml.safe_dump(m, sort_keys=False, allow_unicode=True, default_flow_style=False))
     print(f"  ✓ {yp.relative_to(ROOT)}: upstream.pr = {pr_url}, status -> Submitted-Upstream")
     return 0
