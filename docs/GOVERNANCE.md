@@ -290,6 +290,279 @@ git add -A && git commit -m "fix: ..."
 git push   # pre-push 钩子自动跑 verify
 ```
 
+#### E. 上游已合入我的 patch,怎么日落(sunset)?
+
+**触发条件**:metadata.upstream_plan.pr 状态变 merged,或上游 release notes 提到了本仓 patch 的功能。
+
+**完整剧本**:
+
+```bash
+# 1. 标 accepted(语义:上游合入了)
+bash tools/lifecycle.sh set redis-7.0.15-0001 accepted
+
+# 2. 标 rebase 时间(可选项,记录"我们知道的时刻")
+bash tools/lifecycle.sh mark-rebased redis-7.0.15-0001 2026-07-13
+
+# 3. 标 retired(进入待删除状态)
+bash tools/lifecycle.sh set redis-7.0.15-0001 retired
+
+# 4. 退役(4 处同步删)
+bash tools/lifecycle.sh retire redis-7.0.15-0001
+# 删:patches/0001-...patch
+# 删:metadata/0001-...yaml
+# 删:series 中的 0001-...patch 一行
+# 跑:verify 自动校验
+```
+
+**文档同步(必做)**:删除 patch 后,可能有其他文档引用了它。**全部更新**!
+
+```bash
+# 找所有引用此 patch 的地方
+grep -rn "io_uring\|0001-hw-kunpeng" README.md README_en.md docs/ .github/ 2>/dev/null
+```
+
+常见引用点:
+
+| 文件 | 该改什么 |
+|---|---|
+| `README.md` / `README_en.md` | 删"特性介绍"段对此 patch 的描述,改"已合入上游" |
+| `docs/zh/redis_network_async_optimization_feature_guide.md` | 同上 |
+| `CHANGELOG.md`(如有) | 加一行 `### Removed` 记录 |
+| `GOVERNANCE.md` § 1 目录结构示例 | 更新 patch 数 |
+| `GOVERNANCE.md` § 0 30 秒速读表 | 更新"patch 总数" |
+
+**判断题:patch 和文档同时删 vs 只删 patch 保留 metadata?**
+
+| 方案 | 何时用 |
+|---|---|
+| **同时删 4 处** | 本仓精神是"简洁",默认选这个 |
+| 只删 patch 文件,保留 metadata yaml 改 `status: removed-archive` | 想保留审计痕迹(下游需要历史) |
+| 删 patch + metadata,但加一行到 `CHANGELOG.md` | 兼顾简洁 + 留痕(本仓推荐) |
+
+**完整 e2e 示例**(本仓 0001 假设被上游 7.2 合并):
+
+```bash
+# 1. 标 accepted
+bash tools/lifecycle.sh set redis-7.0.15-0001 accepted
+
+# 2. 查引用
+grep -rn "0001\|io_uring" README.md docs/
+
+# 3. 改 README.md 删引用段
+$EDITOR README.md
+
+# 4. 改 docs/...
+$EDITOR docs/zh/redis_network_async_optimization_feature_guide.md
+
+# 5. CHANGELOG.md 留痕
+echo "## 2026-07-13
+- remove redis-7.0.15-0001(io_uring): merged upstream in 7.2" >> CHANGELOG.md
+
+# 6. 退役
+bash tools/lifecycle.sh retire redis-7.0.15-0001
+
+# 7. 跑 verify
+bash tools/verify.sh
+
+# 8. 提交 push
+git add -A
+git commit -m "chore(retire): remove 0001, merged upstream in 7.2"
+git push
+```
+
+#### F. 怎么基于本仓构建(消费侧剧本)
+
+**场景**:你(下游用户)拿到本仓的 patch,要 apply 到干净 redis 源码上 make。
+
+**方法 1(最快,1 行):用 verify.sh 看 apply 状态**
+
+```bash
+bash tools/verify.sh
+# 输出每个 patch 的 apply 状态,但产物在 /tmp,不可用
+```
+
+**方法 2(标准):逐 patch apply + build 到 redis 源**
+
+```bash
+# 假设 redis 源在 /opt/redis-7.0.15
+REDIS_SRC=/opt/redis-7.0.15
+VER=7.0.15
+PATCH_REPO=/path/to/this/Redis-mvp-demo
+
+cd "$REDIS_SRC"
+git checkout $VER  # 或 checkout 目标 commit
+
+# 逐 patch apply,每步 build + test
+i=0
+while read p; do
+    i=$((i+1))
+    [[ "$p" =~ ^# ]] && continue
+    [[ -z "$p" ]] && continue
+
+    echo "=== [$i] $p ==="
+
+    # Step 1: apply
+    if ! git apply --check "$PATCH_REPO/versions/redis-$VER/patches/$p"; then
+        echo "  ✗ apply 失败,停止"
+        exit 1
+    fi
+    git apply "$PATCH_REPO/versions/redis-$VER/patches/$p"
+    echo "  ✓ applied"
+
+    # Step 2: build
+    make distclean >/dev/null 2>&1
+    if ! make -j$(nproc) >/dev/null 2>&1; then
+        echo "  ✗ build 失败,patch 引入编译错误"
+        exit 1
+    fi
+    echo "  ✓ build OK"
+
+    # Step 3: smoke test(可选)
+    if [ -x ./runtest ]; then
+        ./runtest --single unit/type 2>/dev/null && echo "  ✓ unit test OK" || echo "  ⚠ unit test 失败"
+    fi
+done < "$PATCH_REPO/versions/redis-$VER/series"
+```
+
+**方法 3(脚本化):保存到 `tools/apply-and-build.sh` 复用**
+
+```bash
+cat > /tmp/apply-and-build.sh <<'EOF'
+#!/usr/bin/env bash
+# apply-and-build.sh —— 把本仓的 patch apply 到 redis 源上并 build
+# 用法: bash /tmp/apply-and-build.sh <redis-src-dir> [version]
+set -e
+SRC="${1:?usage: $0 <redis-src-dir> [version]}"
+VER="${2:-7.0.15}"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+cd "$SRC"
+git checkout "$VER" 2>/dev/null || { echo "  ✗ 缺 $VER tag"; exit 1; }
+i=0
+while read p; do
+    i=$((i+1))
+    [[ "$p" =~ ^# ]] && continue
+    [[ -z "$p" ]] && continue
+    echo "[$i] $p"
+    git apply --check "$REPO/versions/redis-$VER/patches/$p" || { echo "  ✗ apply fail"; exit 1; }
+    git apply "$REPO/versions/redis-$VER/patches/$p"
+    make -j$(nproc) >/dev/null 2>&1 || { echo "  ✗ build fail"; exit 1; }
+    echo "  ✓"
+done < "$REPO/versions/redis-$VER/series"
+echo "✓ 全部 $i 个 patch apply + build 成功"
+EOF
+chmod +x /tmp/apply-and-build.sh
+```
+
+**回滚**:如果中途某 patch 引入问题,`git reset --hard HEAD` 回滚(每个 apply 前可加 `git commit -am "before 0001"`,回滚用 `git reset --hard HEAD~1`)。
+
+#### G. 两个 patch 冲突怎么办?
+
+**冲突种类**:
+
+| 类型 | 表现 | 难易度 |
+|---|---|---|
+| **A. 顺序敏感但不冲突** | 0001 改 X 第 10 行,0002 改 X 第 50 行 | ✅ 容易,series 排好序即可 |
+| **B. 真冲突** | 0001 和 0002 都改 X 第 10 行的相同内容 | ❌ 难,需手工 rebase |
+| **C. 上下文漂移** | 0001 的 `@@ -10,5 +10,7 @@` 上下文行在 0002 apply 后行号变了 | ⚠️ 中,git apply 失败 |
+
+**检测冲突**:
+
+```bash
+# 单独 apply 都 OK,顺序 apply 才失败 → 真冲突
+git apply --check versions/redis-7.0.15/patches/0001.patch  # OK
+git apply --check versions/redis-7.0.15/patches/0002.patch  # OK
+git apply versions/redis-7.0.15/patches/0001.patch
+git apply --check versions/redis-7.0.15/patches/0002.patch  # 失败!
+
+# 看具体哪个 hunk 失败
+git apply --check versions/redis-7.0.15/patches/0002.patch 2>&1
+# error: patch failed: src/networking.c:123
+# error: src/networking.c: patch does not apply
+```
+
+**解决 3 方案**:
+
+**方案 1:rebase 后到的 patch(推荐)**
+
+```bash
+# 思路:让 0002 基于"0001 apply 后"的状态生成
+cd /tmp/redis-7.0.15
+git checkout <baseline>
+git apply 0001.patch
+
+# 现在手动编辑,产生新的 0002 内容
+$EDITOR src/networking.c
+
+# 生成新的 0002 patch
+git diff > /path/to/Redis/versions/redis-7.0.15/patches/0002.patch
+```
+
+**方案 2:三方合并(部分自动化)**
+
+```bash
+git apply --3way 0002.patch
+# 3-way merge 利用 git 的合并算法,可能能自动解决一部分
+# 成功:直接 apply
+# 失败:有 CONFLICT 标记,需手工
+```
+
+**方案 3:--reject 部分应用**
+
+```bash
+git apply --reject 0002.patch
+# 成功的 hunk 已应用
+# 失败的 hunk 留到 .rej 文件,需手工
+# 最后 git status 看哪些 .rej
+```
+
+**方案 4:合并两个 patch 为一个**
+
+```bash
+# 思路:把 0001 和 0002 的 hunks 合并
+cat 0001.patch 0002.patch > combined.patch
+# 手工编辑 combined.patch,去重 / 合并相近的 hunks
+# 一般方案 1 失败时才用
+```
+
+**预防措施(写 patch 时就避免冲突)**:
+
+| 做法 | 理由 |
+|---|---|
+| patch 拆细,每个 patch 只改一个 feature | 冲突面小,定位容易 |
+| `applies_to` 字段记下"这个 patch 改哪些文件"(旧 metadata 字段,新 metadata 没保留) | 写 patch 时主动避开其他 patch 改的文件 |
+| 早期 PR 阶段就 review,避免后期改同一文件 | review 时关注 "applies_to" 区域重叠 |
+| 用 `git log --diff-filter=M --name-only` 查每个 patch 改的文件 | 写新 patch 时避开 |
+
+**完整排查剧本**(本仓两个 patch 冲突示例):
+
+```bash
+# 1. 跑 verify 看到错误
+bash tools/verify.sh
+# 输出:  ⚠ redis-7.0.15/0002-perf-...: apply 失败
+
+# 2. 单独 check 0002
+cd /tmp && rm -rf r && git clone --depth 1 --branch 7.0.15 https://github.com/redis/redis r
+cd r
+git apply --check /path/to/Redis/versions/redis-7.0.15/patches/0001.patch  # OK
+git apply /path/to/Redis/versions/redis-7.0.15/patches/0001.patch
+git apply --check /path/to/Redis/versions/redis-7.0.15/patches/0002.patch  # 失败
+# error: patch failed: src/networking.c:123
+
+# 3. 试 --3way
+cd /tmp/r
+git apply --3way /path/to/Redis/versions/redis-7.0.15/patches/0002.patch
+# 成功?✓ 完事
+# 失败?有 CONFLICT,手工编辑
+
+# 4. 手工合并(3-way 失败时)
+$EDITOR src/networking.c
+# 找 <<<<<<< 标记,合并
+git diff > /path/to/Redis/versions/redis-7.0.15/patches/0002.patch
+# 跑 verify
+bash tools/verify.sh
+```
+
 ---
 
 ## 5. 关于 quilt 的调研结论
