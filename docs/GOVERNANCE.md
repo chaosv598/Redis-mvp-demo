@@ -276,11 +276,40 @@ git add -A && git commit -m "chore(rebase): upgrade to 7.0.16"
 git push
 ```
 
-#### C. 退役 patch
+#### C. 退役 patch(默认 archive 到 retired/,可恢复)
 
 ```bash
 bash tools/lifecycle.sh set redis-7.0.15-0001 retired
 bash tools/lifecycle.sh retire redis-7.0.15-0001
+# 实际动作(可恢复,非真删):
+#   metadata/0001-...yaml         → metadata/retired/0001-...yaml
+#   patches/0001-...patch         → patches/retired/0001-...patch
+#   series                        删一行
+#   yaml 里 status 改成 retired
+```
+
+**如果确实要物理删除(不可恢复)**:
+
+```bash
+# archive 后,手动 rm
+rm versions/redis-7.0.15/metadata/retired/0001-*.yaml
+rm versions/redis-7.0.15/patches/retired/0001-*.patch
+rmdir versions/redis-7.0.15/metadata/retired 2>/dev/null
+rmdir versions/redis-7.0.15/patches/retired 2>/dev/null
+```
+
+**想反悔(retire 错了,复活 patch)**:
+
+```bash
+bash tools/lifecycle.sh restore redis-7.0.15-0001
+# metadata 移回 active,patches 移回 active,series 加回,status 改 validated
+```
+
+**想查已退役的 patch**:
+
+```bash
+bash tools/lifecycle.sh show redis-7.0.15-0001 --archived
+# 默认 show 只查 active;--archived 查 retired/
 ```
 
 #### D. 改完 push
@@ -306,12 +335,15 @@ bash tools/lifecycle.sh mark-rebased redis-7.0.15-0001 2026-07-13
 # 3. 标 retired(进入待删除状态)
 bash tools/lifecycle.sh set redis-7.0.15-0001 retired
 
-# 4. 退役(4 处同步删)
+# 4. 退役(archive 到 retired/,非真删)
 bash tools/lifecycle.sh retire redis-7.0.15-0001
-# 删:patches/0001-...patch
-# 删:metadata/0001-...yaml
-# 删:series 中的 0001-...patch 一行
-# 跑:verify 自动校验
+# 实际动作:
+#   metadata/0001-...yaml  → metadata/retired/0001-...yaml
+#   patches/0001-...patch  → patches/retired/0001-...patch
+#   series                 删 0001-...patch 一行
+#   yaml.status            → retired
+#   然后自动跑 verify
+# 想反悔就:bash tools/lifecycle.sh restore redis-7.0.15-0001
 ```
 
 **文档同步(必做)**:删除 patch 后,可能有其他文档引用了它。**全部更新**!
@@ -331,13 +363,18 @@ grep -rn "io_uring\|0001-hw-kunpeng" README.md README_en.md docs/ .github/ 2>/de
 | `GOVERNANCE.md` § 1 目录结构示例 | 更新 patch 数 |
 | `GOVERNANCE.md` § 0 30 秒速读表 | 更新"patch 总数" |
 
-**判断题:patch 和文档同时删 vs 只删 patch 保留 metadata?**
+**判断题:patch 真删 vs archive 到 retired/?**
 
 | 方案 | 何时用 |
 |---|---|
-| **同时删 4 处** | 本仓精神是"简洁",默认选这个 |
-| 只删 patch 文件,保留 metadata yaml 改 `status: removed-archive` | 想保留审计痕迹(下游需要历史) |
-| 删 patch + metadata,但加一行到 `CHANGELOG.md` | 兼顾简洁 + 留痕(本仓推荐) |
+| **archive 到 retired/(默认)** | 本仓精神是"开发者愿意配合",可恢复、不冒险。`bash tools/lifecycle.sh retire <id>` 一行解决 |
+| 真删(rm) | archive 之后过了几个 release 确认不会回来再手动 rm,或退役的 patch 有 license 风险 |
+| archive + CHANGELOG 留痕 | 兼顾可恢复 + 团队沟通(本仓推荐) |
+
+> 注:`bash tools/lifecycle.sh retire <id>` **不真删**,而是 mv 到 `retired/` 子目录。好处:
+> - 想"复活"就 `bash tools/lifecycle.sh restore <id>`
+> - 想真删时手动 `rm retired/*.yaml retired/*.patch` 即可
+> - 配合 git history,任何退役 patch 都可追溯 |
 
 **完整 e2e 示例**(本仓 0001 假设被上游 7.2 合并):
 
