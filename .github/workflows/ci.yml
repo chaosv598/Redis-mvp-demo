@@ -1,8 +1,9 @@
-# BoostKit Patch v5 MVP —— GitHub Actions CI 4 步必跑
-# 翻译自 .gitee-ci.yml(2026-07-10)
-# 触发: push to master, pull_request, workflow_dispatch(手动)
+# Patch overlay CI —— 一键 verify
+# 跑 bash tools/verify.sh,PR 触发时执行
+# 历史:本文件早期含 7 个 job(doctor/lint/check-series/check-deps/check-owners/check-apply/check-tag)
+# 现在合并为 1 个 verify job(2026-07-13 simplify-v2)
 
-name: boostkit-v5-ci
+name: verify
 
 on:
   push:
@@ -11,123 +12,18 @@ on:
     branches: [master]
   workflow_dispatch:
 
-# 允许同 PR 内部重入(避免旧的 run 占用并发名额)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 默认所有 job ubuntu-latest(GitHub 公共仓库免费 runner)
 jobs:
-  # ===========================================
-  # STAGE 1: lint —— doctor / lint / check-series
-  # ===========================================
-  doctor:
-    name: doctor (7 铁律自检)
+  verify:
+    name: verify (patch overlay 一键校验)
     runs-on: ubuntu-latest
     steps:
-      # fetch-depth: 0 让 doctor.py 能看到 master 分支(PR 触发时默认 shallow clone 只拉 PR HEAD)
-      - name: Checkout (full history)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
       - name: Install pyyaml
         run: pip install pyyaml --quiet
-      - name: Run doctor
-        run: python tools/doctor.py
-
-  lint:
-    name: lint (boostkit.yaml schema)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install pyyaml
-        run: pip install pyyaml --quiet
-      - name: Run lint
-        run: python tools/lint.py boostkit.yaml
-
-  check-series:
-    name: check-series (series ↔ patches/ 一致)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Run check-series
-        run: python tools/check-series.py
-
-  check-deps:
-    name: check-deps (metadata applies_on_top ↔ series 顺序)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Run check-deps
-        run: python tools/check-deps.py
-
-  # ===========================================
-  # STAGE 2: apply —— check-apply(从干净 upstream 重放)
-  # ===========================================
-  check-apply:
-    name: check-apply (干净 upstream apply)
-    runs-on: ubuntu-latest
-    # check-apply 需要拉 github.com/redis/redis 完整 tarball+checkout,网络慢/失败不算仓治理问题
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Run check-apply
-        run: bash tools/check-apply.sh
-      - name: Upload reports on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: check-apply-reports
-          path: versions/*/reports/
-          if-no-files-found: ignore
-
-  # ===========================================
-  # STAGE 3: owners —— check-owners(强制双签)
-  # ===========================================
-  check-owners:
-    name: check-owners (OWNERS ≥ 2 双签)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Run check-owners
-        run: python tools/check-owners.py OWNERS
-
-  # ===========================================
-  # STAGE 4: tag 规范(可选,选跑)
-  # ===========================================
-  check-tag:
-    name: check-tag (tag 命名规范)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        with:
-          fetch-depth: 0
-        uses: actions/checkout@v4
-      - name: Run check-tag
-        run: bash tools/check-tag.sh
+      - name: Run verify
+        run: bash tools/verify.sh

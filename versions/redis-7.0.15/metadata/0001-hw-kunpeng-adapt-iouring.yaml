@@ -1,42 +1,12 @@
 id: redis-7.0.15-0001
 title: Adapt io_uring for Kunpeng ARM
-project: redis
-type: hw
-status: Validated
-risk_level: high
+owner: twwang@boostkit
 upstream_base:
   repo: https://github.com/redis/redis
   version: 7.0.15
-  tag: 7.0.15
   commit: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
-owner:
-  team: sig-multimedia
-  person: twwang@boostkit
-created_at: 2025-11-20
-last_rebased_at: 2026-07-10
-applies_to:
-  - 7.0.15
-applies_on_top: []
-upstream:
-  status: Submitted-Upstream
-  url: https://github.com/redis/redis
-  issue: null
+applies_to: 7.0.15
+upstream_plan:
+  status: submitted
   pr: https://github.com/redis/redis/pull/TBD
-  upstream_commit: null
-requirement:
-  id: REQ-2026-KUNPENG-IO
-  description: Use io_uring for Kunpeng ARM Redis 7.x networking
-validation:
-  build:
-    required: true
-    matrix: [kunpeng-arm64-gcc, kunpeng-arm64-clang]
-  tests: [redis-smoke, iouring-throughput, kraio-bench]
-  performance:
-    required: true
-    benchmark: redis-bench-kraio
-    baseline_version: 7.0.15
-remove_when:
-  condition: Upstream native io_uring merge released
-  version_gte: 8.0.0
-  upstream_commit: null
-notes: Based on 6.0.15/6.0.20 backport, extended to 7.x networking model.
+  note: Submitted upstream, awaiting review
