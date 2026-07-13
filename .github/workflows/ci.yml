@@ -67,6 +67,19 @@ jobs:
       - name: Run check-series
         run: python tools/check-series.py
 
+  check-deps:
+    name: check-deps (metadata applies_on_top ↔ series 顺序)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run check-deps
+        run: python tools/check-deps.py
+
   # ===========================================
   # STAGE 2: apply —— check-apply(从干净 upstream 重放)
   # ===========================================
