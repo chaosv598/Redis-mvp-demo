@@ -25,8 +25,11 @@ jobs:
     name: doctor (7 铁律自检)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      # fetch-depth: 0 让 doctor.py 能看到 master 分支(PR 触发时默认 shallow clone 只拉 PR HEAD)
+      - name: Checkout (full history)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
