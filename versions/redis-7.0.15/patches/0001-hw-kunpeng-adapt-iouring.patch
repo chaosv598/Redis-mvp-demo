@@ -1,0 +1,492 @@
+From d3f25dabe68a85e6aa7cfe7354bb5f380b57ee67 Mon Sep 17 00:00:00 2001
+From: twwang <920347125@qq.com>
+Date: Thu, 20 Nov 2025 21:30:33 +0800
+Subject: [PATCH] redis-7.0.15-adapt-iouring
+
+---
+ redis.conf       |   2 +-
+ src/Makefile     |   2 +-
+ src/config.c     |   1 +
+ src/evict.c      |   2 +-
+ src/networking.c | 313 +++++++++++++++++++++++++++++++++++++++++++++++
+ src/server.c     |   5 +-
+ src/server.h     |   4 +
+ 7 files changed, 324 insertions(+), 5 deletions(-)
+
+diff --git a/redis.conf b/redis.conf
+index 0431c3742..cdf2ef491 100644
+--- a/redis.conf
++++ b/redis.conf
+@@ -144,7 +144,7 @@ port 6379
+ # will silently truncate it to the value of /proc/sys/net/core/somaxconn so
+ # make sure to raise both the value of somaxconn and tcp_max_syn_backlog
+ # in order to get the desired effect.
+-tcp-backlog 511
++tcp-backlog 2048
+ 
+ # Unix socket.
+ #
+diff --git a/src/Makefile b/src/Makefile
+index e4f7d9068..23981fb61 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -371,7 +371,7 @@ endif
+ 
+ # redis-server
+ $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ)
+-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a ../deps/hdr_histogram/libhdrhistogram.a $(FINAL_LIBS)
++	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a ../deps/hdr_histogram/libhdrhistogram.a -lkraio $(FINAL_LIBS)
+ 
+ # redis-sentinel
+ $(REDIS_SENTINEL_NAME): $(REDIS_SERVER_NAME)
+diff --git a/src/config.c b/src/config.c
+index bfb49ef9c..ecfd44bde 100644
+--- a/src/config.c
++++ b/src/config.c
+@@ -2965,6 +2965,7 @@ static int applyClientMaxMemoryUsage(const char **err) {
+ 
+ standardConfig static_configs[] = {
+     /* Bool configs */
++    createBoolConfig("iouring_enable", NULL, IOURING_ENABLE, iouring_enable, 1, NULL, NULL),
+     createBoolConfig("rdbchecksum", NULL, IMMUTABLE_CONFIG, server.rdb_checksum, 1, NULL, NULL),
+     createBoolConfig("daemonize", NULL, IMMUTABLE_CONFIG, server.daemonize, 0, NULL, NULL),
+     createBoolConfig("io-threads-do-reads", NULL, DEBUG_CONFIG | IMMUTABLE_CONFIG, server.io_threads_do_reads, 0,NULL, NULL), /* Read + parse from threads? */
+diff --git a/src/evict.c b/src/evict.c
+index a9e24a762..c806dd963 100644
+--- a/src/evict.c
++++ b/src/evict.c
+@@ -451,7 +451,7 @@ int overMaxmemoryAfterAlloc(size_t moremem) {
+  * could not immediately be resolved.  This will spin the event loop with short
+  * eviction cycles until the "maxmemory" condition has resolved or there are no
+  * more evictable items.  */
+-static int isEvictionProcRunning = 0;
++int isEvictionProcRunning = 0;
+ static int evictionTimeProc(
+         struct aeEventLoop *eventLoop, long long id, void *clientData) {
+     UNUSED(eventLoop);
+diff --git a/src/networking.c b/src/networking.c
+index 90cc64d70..753008a77 100644
+--- a/src/networking.c
++++ b/src/networking.c
+@@ -35,10 +35,12 @@
+ #include <sys/uio.h>
+ #include <math.h>
+ #include <ctype.h>
++#include <kraio.h>
+ 
+ static void setProtocolError(const char *errstr, client *c);
+ int postponeClientRead(client *c);
+ int ProcessingEventsWhileBlocked = 0; /* See processEventsWhileBlocked(). */
++typedef void (*handle_callback_t)(client *c, ssize_t *nwritten);
+ 
+ /* Return the size consumed from the allocator, for the specified SDS string,
+  * including internal fragmentation. This function is used in order to compute
+@@ -1816,12 +1818,314 @@ client *lookupClientByID(uint64_t id) {
+     return (c == raxNotFound) ? NULL : c;
+ }
+ 
++int callback_before_common(client *c, ssize_t *nwritten) {
++    if (*nwritten <= 0) return C_ERR;
++    if (getClientType(c) == CLIENT_TYPE_SLAVE) {
++        serverAssert(c->bufpos == 0 && listLength(c->reply) == 0);
++
++        replBufBlock *o = listNodeValue(c->ref_repl_buf_node);
++        serverAssert(o->used >= c->ref_block_pos);
++        /* Send current block if it is not fully sent. */
++        if (o->used > c->ref_block_pos) {
++            c->ref_block_pos += *nwritten;
++        }
++
++        /* If we fully sent the object on head, go to the next one. */
++        listNode *next = listNextNode(c->ref_repl_buf_node);
++        if (next && c->ref_block_pos == o->used) {
++            o->refcount--;
++            ((replBufBlock *)(listNodeValue(next)))->refcount++;
++            c->ref_repl_buf_node = next;
++            c->ref_block_pos = 0;
++            incrementalTrimReplicationBacklog(REPL_BACKLOG_TRIM_BLOCKS_PER_CALL);
++        }
++        return C_OK;
++    }
++    return C_OK;
++}
++
++void callback_after_common(client *c, ssize_t *nwritten, ssize_t totwritten) {
++    if (getClientType(c) == CLIENT_TYPE_SLAVE) {
++        atomicIncr(server.stat_net_repl_output_bytes, totwritten);
++    } else {
++        atomicIncr(server.stat_net_output_bytes, totwritten);
++    }
++
++    if (*nwritten == -1 && errno != EAGAIN) {
++        c->conn->last_errno = errno;
++        if (errno != EINTR && connGetState(c->conn) == CONN_STATE_CONNECTED) {
++            c->conn->state = CONN_STATE_ERROR;
++            serverLog(LL_WARNING, "[Euler]Error writing to client: %s", connGetLastError(c->conn));
++            freeClientAsync(c);
++            return;
++        }
++    }
++
++    if (totwritten > 0) {
++        /* For clients representing masters we don't count sending data
++         * as an interaction, since we always send REPLCONF ACK commands
++         * that take some time to just fill the socket output buffer.
++         * We just rely on data / pings received for timeout detection. */
++        if (!(c->flags & CLIENT_MASTER)) c->lastinteraction = server.unixtime;
++    }
++
++    if (!clientHasPendingReplies(c)) {
++        c->sentlen = 0;
++
++        /* Close connection after entire reply has been sent. */
++        if (c->flags & CLIENT_CLOSE_AFTER_REPLY) {
++            freeClientAsync(c);
++            return;
++        }
++    } else {
++        if (*nwritten == -1 && errno == EAGAIN) {
++            /* Wait for kernel epollout event if tcp write buffer is full */
++            installClientWriteHandler(c);
++        } else {
++            writeToClient(c, 0);
++        }
++    }
++
++    if (io_threads_op == IO_THREADS_OP_IDLE)
++        updateClientMemUsageAndBucket(c);
++}
++
++void handle_writev_callback(client *c, ssize_t *nwritten) {
++    if (*nwritten <= 0) return;
++    /* Locate the new node which has leftover data and
++     * release all nodes in front of it. */
++    ssize_t remaining = *nwritten;
++    listIter iter;
++    listNode *next;
++    clientReplyBlock *o;
++    if (c->bufpos > 0) { /* deal with static reply buffer first. */
++        int buf_len = c->bufpos - c->sentlen;
++        c->sentlen += remaining;
++        /* If the buffer was sent, set bufpos to zero to continue with
++         * the remainder of the reply. */
++        if (remaining >= buf_len) {
++            c->bufpos = 0;
++            c->sentlen = 0;
++
++        }
++        remaining -= buf_len;
++    }
++    listRewind(c->reply, &iter);
++    while (remaining > 0) {
++        next = listNext(&iter);
++        o = listNodeValue(next);
++        if (remaining < (ssize_t)(o->used - c->sentlen)) {
++            c->sentlen += remaining;
++            break;
++        }
++        remaining -= (ssize_t)(o->used - c->sentlen);
++        c->reply_bytes -= o->size;
++        listDelNode(c->reply, next);
++        c->sentlen = 0;
++    }
++}
++
++void handle_write_callback(client *c, ssize_t *nwritten) {
++    if (c->bufpos > 0) {
++        if (*nwritten <= 0) return;
++        c->sentlen += *nwritten;
++        /* If the buffer was sent, set bufpos to zero to continue with
++        * the remainder of the reply. */
++        if ((int)c->sentlen == c->bufpos) {
++            c->bufpos = 0;
++            c->sentlen = 0;
++        }
++    }
++}
++
++void write_callback_common(client *c, int ret, handle_callback_t handle_callback) {
++    atomicIncr(server.stat_total_writes_processed, 1);
++    ssize_t nwritten = 0, totwritten = 0;
++    c->flags &= ~CLIENT_ASYNC;
++    while (nwritten == 0) {
++        nwritten = ret;
++        if (ret == C_ERR) break;
++        callback_before_common(c, &nwritten);
++        handle_callback(c, &nwritten);
++        totwritten += nwritten;
++        if (totwritten > NET_MAX_WRITES_PER_EVENT &&
++            (server.maxmemory == 0 ||
++             zmalloc_used_memory() < server.maxmemory) &&
++            !(c->flags & CLIENT_SLAVE)) break;
++    }
++    callback_after_common(c, &nwritten, totwritten);
++}
++
++void writeCallback(int ret, int fd) {
++    connection *conn = server.el->events[fd].clientData;
++    client *c = connGetPrivateData(conn);
++    write_callback_common(c, ret, handle_write_callback);
++}
++
++void writevCallback(int ret, int fd) {
++    connection *conn = server.el->events[fd].clientData;
++    client *c = connGetPrivateData(conn);
++    write_callback_common(c, ret, handle_writev_callback);
++}
++
++__attribute__((constructor)) void registWriteCallback() {register_write_callback(writeCallback);}
++__attribute__((constructor)) void registWritevCallback() {register_writev_callback(writevCallback);}
++
+ /* This function should be called from _writeToClient when the reply list is not empty,
+  * it gathers the scattered buffers from reply list and sends them away with connWritev.
+  * If we write successfully, it returns C_OK, otherwise, C_ERR is returned,
+  * and 'nwritten' is an output parameter, it means how many bytes server write
+  * to client. */
++static int _writevToClientAsync(client *c, ssize_t *nwritten) {
++    struct iovec iov[IOV_MAX];
++    int iovcnt = 0;
++    size_t iov_bytes_len = 0;
++    /* If the static reply buffer is not empty, 
++     * add it to the iov array for writev() as well. */
++    if (c->bufpos > 0) {
++        iov[iovcnt].iov_base = c->buf + c->sentlen;
++        iov[iovcnt].iov_len = c->bufpos - c->sentlen;
++        iov_bytes_len += iov[iovcnt++].iov_len;
++    }
++    /* The first node of reply list might be incomplete from the last call,
++     * thus it needs to be calibrated to get the actual data address and length. */
++    size_t offset = c->bufpos > 0 ? 0 : c->sentlen;
++    listIter iter;
++    listNode *next;
++    clientReplyBlock *o;
++    listRewind(c->reply, &iter);
++    while ((next = listNext(&iter)) && iovcnt < IOV_MAX && iov_bytes_len < NET_MAX_WRITES_PER_EVENT) {
++        o = listNodeValue(next);
++        if (o->used == 0) { /* empty node, just release it and skip. */
++            c->reply_bytes -= o->size;
++            listDelNode(c->reply, next);
++            offset = 0;
++            continue;
++        }
++
++        iov[iovcnt].iov_base = o->buf + offset;
++        iov[iovcnt].iov_len = o->used - offset;
++        iov_bytes_len += iov[iovcnt++].iov_len;
++        offset = 0;
++    }
++    if (iovcnt == 0) return C_OK;
++    if (!isEvictionProcRunning) {
++        int ret = writev_async(c->conn->fd, iov, iovcnt);
++        if (ret > 0) {
++            c->flags |= CLIENT_ASYNC;
++            return C_OK;
++        }
++    }
++    *nwritten = connWritev(c->conn, iov, iovcnt);
++    if (*nwritten <= 0) return C_ERR;
++
++    /* Locate the new node which has leftover data and
++     * release all nodes in front of it. */
++    ssize_t remaining = *nwritten;
++    if (c->bufpos > 0) { /* deal with static reply buffer first. */
++        int buf_len = c->bufpos - c->sentlen;
++        c->sentlen += remaining;
++        /* If the buffer was sent, set bufpos to zero to continue with
++         * the remainder of the reply. */
++        if (remaining >= buf_len) {
++            c->bufpos = 0;
++            c->sentlen = 0;
++        }
++        remaining -= buf_len;
++    }
++    listRewind(c->reply, &iter);
++    while (remaining > 0) {
++        next = listNext(&iter);
++        o = listNodeValue(next);
++        if (remaining < (ssize_t)(o->used - c->sentlen)) {
++            c->sentlen += remaining;
++            break;
++        }
++        remaining -= (ssize_t)(o->used - c->sentlen);
++        c->reply_bytes -= o->size;
++        listDelNode(c->reply, next);
++        c->sentlen = 0;
++    }
++
++    return C_OK;
++}
++
++/* This function does actual writing output buffers to different types of
++ * clients, it is called by writeToClient.
++ * If we write successfully, it returns C_OK, otherwise, C_ERR is returned,
++ * and 'nwritten' is an output parameter, it means how many bytes server write
++ * to client. */
++int _writeToClientAsync(client *c, ssize_t *nwritten) {
++    *nwritten = 0;
++    if (getClientType(c) == CLIENT_TYPE_SLAVE) {
++        serverAssert(c->bufpos == 0 && listLength(c->reply) == 0);
++
++        replBufBlock *o = listNodeValue(c->ref_repl_buf_node);
++        serverAssert(o->used >= c->ref_block_pos);
++        /* Send current block if it is not fully sent. */
++        if (o->used > c->ref_block_pos) {
++            int ret = write_async(c->conn->fd, o->buf+c->ref_block_pos,
++                                  o->used-c->ref_block_pos);
++            if (ret > 0) {
++                c->flags |= CLIENT_ASYNC;
++                return C_OK;
++            }
++            *nwritten = connWrite(c->conn, o->buf+c->ref_block_pos,
++                                  o->used-c->ref_block_pos);
++            if (*nwritten <= 0) return C_ERR;
++            c->ref_block_pos += *nwritten;
++        }
++
++        /* If we fully sent the object on head, go to the next one. */
++        listNode *next = listNextNode(c->ref_repl_buf_node);
++        if (next && c->ref_block_pos == o->used) {
++            o->refcount--;
++            ((replBufBlock *)(listNodeValue(next)))->refcount++;
++            c->ref_repl_buf_node = next;
++            c->ref_block_pos = 0;
++            incrementalTrimReplicationBacklog(REPL_BACKLOG_TRIM_BLOCKS_PER_CALL);
++        }
++        return C_OK;
++    }
++
++    /* When the reply list is not empty, it's better to use writev to save us some
++     * system calls and TCP packets. */
++    if (listLength(c->reply) > 0) {
++        int ret = _writevToClientAsync(c, nwritten);
++        if (ret == C_OK && (c->flags & CLIENT_ASYNC)) return C_OK;
++        if (ret != C_OK) return ret;
++
++        /* If there are no longer objects in the list, we expect
++         * the count of reply bytes to be exactly zero. */
++        if (listLength(c->reply) == 0)
++            serverAssert(c->reply_bytes == 0);
++    } else if (c->bufpos > 0) {
++        if (!isEvictionProcRunning) {
++            int ret = write_async(c->conn->fd, c->buf + c->sentlen, c->bufpos - c->sentlen);
++            if (ret > 0) {
++                c->flags |= CLIENT_ASYNC;
++                return C_OK;
++            }
++        }
++        *nwritten = connWrite(c->conn, c->buf + c->sentlen, c->bufpos - c->sentlen);
++        if (*nwritten <= 0) return C_ERR;
++        c->sentlen += *nwritten;
++
++        /* If the buffer was sent, set bufpos to zero to continue with
++         * the remainder of the reply. */
++        if ((int)c->sentlen == c->bufpos) {
++            c->bufpos = 0;
++            c->sentlen = 0;
++        }
++    } 
++
++    return C_OK;
++}
++
+ static int _writevToClient(client *c, ssize_t *nwritten) {
++    if (iouring_enable) {
++        return _writevToClientAsync(c, nwritten);
++    }
+     struct iovec iov[IOV_MAX];
+     int iovcnt = 0;
+     size_t iov_bytes_len = 0;
+@@ -1894,6 +2198,9 @@ static int _writevToClient(client *c, ssize_t *nwritten) {
+  * and 'nwritten' is an output parameter, it means how many bytes server write
+  * to client. */
+ int _writeToClient(client *c, ssize_t *nwritten) {
++    if (iouring_enable) {
++        return _writeToClientAsync(c, nwritten);
++    }
+     *nwritten = 0;
+     if (getClientType(c) == CLIENT_TYPE_SLAVE) {
+         serverAssert(c->bufpos == 0 && listLength(c->reply) == 0);
+@@ -1960,8 +2267,14 @@ int writeToClient(client *c, int handler_installed) {
+ 
+     ssize_t nwritten = 0, totwritten = 0;
+ 
++    if (c->flags & CLIENT_ASYNC)
++        return C_OK;
++
+     while(clientHasPendingReplies(c)) {
+         int ret = _writeToClient(c, &nwritten);
++        /* Always return ERR to avoid installing write handler in handleClientsWithPendingWrites() */
++        if (c->flags & CLIENT_ASYNC) return C_ERR;
++
+         if (ret == C_ERR) break;
+         totwritten += nwritten;
+         /* Note that we avoid to send more than NET_MAX_WRITES_PER_EVENT
+diff --git a/src/server.c b/src/server.c
+index 9ca360ed4..ff4bf1692 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -84,7 +84,7 @@ double R_Zero, R_PosInf, R_NegInf, R_Nan;
+ 
+ /* Global vars */
+ struct redisServer server; /* Server global state */
+-
++int iouring_enable = 1;
+ /*============================ Internal prototypes ========================== */
+ 
+ static inline int isShutdownInitiated(void);
+@@ -736,7 +736,7 @@ int clientsCronResizeOutputBuffer(client *c, mstime_t now_ms) {
+     const size_t buffer_target_expand_size = c->buf_usable_size*2;
+ 
+     /* in case the resizing is disabled return immediately */
+-    if(!server.reply_buffer_resizing_enabled)
++    if((c->bufpos != 0 || c->sentlen != 0) || !server.reply_buffer_resizing_enabled)
+         return 0;
+ 
+     if (buffer_target_shrink_size >= PROTO_REPLY_MIN_BYTES &&
+@@ -1709,6 +1709,7 @@ void afterSleep(struct aeEventLoop *eventLoop) {
+             latencyAddSampleIfNeeded("module-acquire-GIL",latency);
+         }
+     }
++    freeClientsInAsyncFreeQueue();
+ }
+ 
+ /* =========================== Server initialization ======================== */
+diff --git a/src/server.h b/src/server.h
+index 82e4db938..96a68c493 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -288,6 +288,7 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
+ #define CMD_CHANNEL_SUBSCRIBE (1ULL<<12)   /* The command subscribes to channels */
+ #define CMD_CHANNEL_UNSUBSCRIBE (1ULL<<13) /* The command unsubscribes to channels */
+ #define CMD_CHANNEL_PUBLISH (1ULL<<14)     /* The command publishes to channels. */
++#define CLIENT_ASYNC (1ULL<<60)
+ 
+ /* AOF states */
+ #define AOF_OFF 0             /* AOF is off */
+@@ -2353,6 +2354,7 @@ extern int io_threads_op;
+  * Extern declarations
+  *----------------------------------------------------------------------------*/
+ 
++extern int iouring_enable;
+ extern struct redisServer server;
+ extern struct sharedObjectsStruct shared;
+ extern dictType objectKeyPointerValueDictType;
+@@ -3041,6 +3043,7 @@ sds keyspaceEventsFlagsToString(int flags);
+                                    * to apply the configuration change even if the new config value is the same as
+                                    * the old. */
+ 
++#define IOURING_ENABLE 0
+ #define INTEGER_CONFIG 0 /* No flags means a simple integer configuration */
+ #define MEMORY_CONFIG (1<<0) /* Indicates if this value can be loaded as a memory value */
+ #define PERCENT_CONFIG (1<<1) /* Indicates if this value can be loaded as a percent (and stored as a negative int) */
+@@ -3261,6 +3264,7 @@ void flushSlaveKeysWithExpireList(void);
+ size_t getSlaveKeyWithExpireCount(void);
+ 
+ /* evict.c -- maxmemory handling and LRU eviction. */
++extern int isEvictionProcRunning;
+ void evictionPoolAlloc(void);
+ #define LFU_INIT_VAL 5
+ unsigned long LFUGetTimeInMinutes(void);
+-- 
+2.24.1.windows.2
+

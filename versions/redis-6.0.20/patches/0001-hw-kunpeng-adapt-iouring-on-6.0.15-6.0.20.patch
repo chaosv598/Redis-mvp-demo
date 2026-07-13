@@ -1,0 +1,154 @@
+From 5c38b88bf5fccec343389dafe7ba1355bcd42ef9 Mon Sep 17 00:00:00 2001
+From: huyizhen <huyizhen2024@163.com>
+Date: Tue, 24 Feb 2026 21:26:01 +0800
+Subject: [PATCH] redis-6.0.15-6.0.20-adapt-iouring
+
+---
+ src/Makefile     |  2 +-
+ src/networking.c | 56 +++++++++++++++++++++++++++++-------------------
+ src/server.h     |  1 +
+ 3 files changed, 36 insertions(+), 23 deletions(-)
+
+diff --git a/src/Makefile b/src/Makefile
+index 691d543..7012473 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -299,7 +299,7 @@ endif
+ 
+ # redis-server
+ $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ)
+-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a $(FINAL_LIBS)
++	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a -lkraio $(FINAL_LIBS)
+ 
+ # redis-sentinel
+ $(REDIS_SENTINEL_NAME): $(REDIS_SERVER_NAME)
+diff --git a/src/networking.c b/src/networking.c
+index a61678d..16808dc 100644
+--- a/src/networking.c
++++ b/src/networking.c
+@@ -34,6 +34,7 @@
+ #include <sys/uio.h>
+ #include <math.h>
+ #include <ctype.h>
++#include "kraio.h"
+ 
+ static void setProtocolError(const char *errstr, client *c);
+ int postponeClientRead(client *c);
+@@ -1375,17 +1376,18 @@ client *lookupClientByID(uint64_t id) {
+  * This function is called by threads, but always with handler_installed
+  * set to 0. So when handler_installed is set to 0 the function must be
+  * thread safe. */
+-int writeToClient(client *c, int handler_installed) {
++void writeCallback(int ret, int fd) {
++    connection *conn = server.el->events[fd].clientData;
++    client *c = connGetPrivateData(conn);
+     /* Update total number of writes on server */
+     server.stat_total_writes_processed++;
+ 
+     ssize_t nwritten = 0, totwritten = 0;
+-    size_t objlen;
+-    clientReplyBlock *o;
++    c->flags &= ~CLIENT_ASYNC;
+ 
+-    while(clientHasPendingReplies(c)) {
++    while(nwritten == 0) {
+         if (c->bufpos > 0) {
+-            nwritten = connWrite(c->conn,c->buf+c->sentlen,c->bufpos-c->sentlen);
++            nwritten = ret;
+             if (nwritten <= 0) break;
+             c->sentlen += nwritten;
+             totwritten += nwritten;
+@@ -1397,22 +1399,14 @@ int writeToClient(client *c, int handler_installed) {
+                 c->sentlen = 0;
+             }
+         } else {
+-            o = listNodeValue(listFirst(c->reply));
+-            objlen = o->used;
+-
+-            if (objlen == 0) {
+-                c->reply_bytes -= o->size;
+-                listDelNode(c->reply,listFirst(c->reply));
+-                continue;
+-            }
+-
+-            nwritten = connWrite(c->conn, o->buf + c->sentlen, objlen - c->sentlen);
++            nwritten = ret;
+             if (nwritten <= 0) break;
+             c->sentlen += nwritten;
+             totwritten += nwritten;
+ 
+             /* If we fully sent the object on head go to the next one */
+-            if (c->sentlen == objlen) {
++            clientReplyBlock *o = listNodeValue(listFirst(c->reply));
++            if (c->sentlen == o->used) {
+                 c->reply_bytes -= o->size;
+                 listDelNode(c->reply,listFirst(c->reply));
+                 c->sentlen = 0;
+@@ -1447,7 +1441,7 @@ int writeToClient(client *c, int handler_installed) {
+             serverLog(LL_VERBOSE,
+                 "Error writing to client: %s", connGetLastError(c->conn));
+             freeClientAsync(c);
+-            return C_ERR;
++            return;
+         }
+     }
+     if (totwritten > 0) {
+@@ -1463,12 +1457,30 @@ int writeToClient(client *c, int handler_installed) {
+          * adDeleteFileEvent() is not thread safe: however writeToClient()
+          * is always called with handler_installed set to 0 from threads
+          * so we are fine. */
+-        if (handler_installed) connSetWriteHandler(c->conn, NULL);
+ 
+         /* Close connection after entire reply has been sent. */
+-        if (c->flags & CLIENT_CLOSE_AFTER_REPLY) {
+-            freeClientAsync(c);
+-            return C_ERR;
++        if (c->flags & CLIENT_CLOSE_AFTER_REPLY) freeClientAsync(c);
++    } else {
++		writeToClient(c, 0);
++	}
++}
++
++__attribute__((constructor)) void registWriteCallback() {register_write_callback(writeCallback);}
++
++int writeToClient(client *c, __attribute__((unused))int handler_installed) {
++    while (clientHasPendingReplies(c)) {
++        if (c->bufpos > 0) {
++            if (write_async(c->conn->fd, c->buf + c->sentlen, c->bufpos - c->sentlen) <= 0) return C_ERR;
++            connSetWriteHandler(c->conn, NULL); c->flags |= CLIENT_ASYNC; break;
++        } else {
++            clientReplyBlock *o = listNodeValue(listFirst(c->reply));
++            if (o->used == 0) {
++                c->reply_bytes -= o->size;
++                listDelNode(c->reply,listFirst(c->reply));
++                continue;
++            }
++            if (write_async(c->conn->fd, o->buf + c->sentlen, o->used - c->sentlen) <= 0) return C_ERR;
++            connSetWriteHandler(c->conn, NULL); c->flags |= CLIENT_ASYNC; break;
+         }
+     }
+     return C_OK;
+@@ -1507,7 +1519,7 @@ int handleClientsWithPendingWrites(void) {
+ 
+         /* If after the synchronous writes above we still have data to
+          * output to the client, we need to install the writable handler. */
+-        if (clientHasPendingReplies(c)) {
++        if (clientHasPendingReplies(c) && !(c->flags & CLIENT_ASYNC)) {
+             int ae_barrier = 0;
+             /* For the fsync=always policy, we want that a given FD is never
+              * served for reading and writing in the same event loop iteration,
+diff --git a/src/server.h b/src/server.h
+index a16f288..99b7e03 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -213,6 +213,7 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
+ #define AOF_WAIT_REWRITE 2    /* AOF waits rewrite to start appending */
+ 
+ /* Client flags */
++#define CLIENT_ASYNC (1ULL<<60)
+ #define CLIENT_SLAVE (1<<0)   /* This client is a repliaca */
+ #define CLIENT_MASTER (1<<1)  /* This client is a master */
+ #define CLIENT_MONITOR (1<<2) /* This client is a slave monitor, see MONITOR */
+-- 
+2.33.0
+

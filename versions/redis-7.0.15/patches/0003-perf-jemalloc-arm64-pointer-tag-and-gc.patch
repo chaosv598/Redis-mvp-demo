@@ -1,0 +1,259 @@
+From ee69bd6b12771bdac8e4a068cca80cccf2dd80bd Mon Sep 17 00:00:00 2001
+From: yinbin <yinbin8@h-partners.com>
+Date: Thu, 21 May 2026 09:15:06 +0800
+Subject: [PATCH] redis-7.0.15 adapt jemalloc-5.2.1 arm64 pointer-tag and gc
+ strategy optimize
+
+Signed-off-by: yinbin <yinbin8@h-partners.com>
+---
+ deps/Makefile                                 | 11 ++++
+ .../include/jemalloc/internal/ptr_tag.h       | 38 +++++++++++++
+ .../include/jemalloc/internal/tcache_types.h  |  2 +-
+ deps/jemalloc/src/jemalloc.c                  | 54 +++++++++++++++++++
+ src/zmalloc.c                                 |  6 +++
+ 5 files changed, 110 insertions(+), 1 deletion(-)
+ create mode 100644 deps/jemalloc/include/jemalloc/internal/ptr_tag.h
+
+diff --git a/deps/Makefile b/deps/Makefile
+index 83ac557c6..202fe8a0e 100644
+--- a/deps/Makefile
++++ b/deps/Makefile
+@@ -103,6 +103,17 @@ ifneq ($(DEB_HOST_GNU_TYPE),)
+ JEMALLOC_CONFIGURE_OPTS += --host=$(DEB_HOST_GNU_TYPE)
+ endif
+ 
++ARCH := $(shell uname -m)
++CC ?= gcc
++HAS_PR_TAGGED_ADDR := $(shell SHELL=/bin/bash printf '\#include <sys/prctl.h>\n\#ifdef PR_SET_TAGGED_ADDR_CTRL\nyes\n\#endif' | $(CC) -E - 2>/dev/null | grep -q '^yes$$' && echo 1 || echo 0)
++ifeq ($(ARCH),aarch64)
++    ifeq ($(HAS_PR_TAGGED_ADDR),1)
++        JEMALLOC_CFLAGS += -DJEMALLOC_PTR_TAG
++    else
++        $(info Pointer tagging disabled: PR_SET_TAGGED_ADDR_CTRL not available)
++    endif
++endif
++
+ jemalloc: .make-prerequisites
+ 	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
+ 	cd jemalloc && ./configure --with-version=5.2.1-0-g0 --with-lg-quantum=3 --with-jemalloc-prefix=je_ CFLAGS="$(JEMALLOC_CFLAGS)" LDFLAGS="$(JEMALLOC_LDFLAGS)" $(JEMALLOC_CONFIGURE_OPTS)
+diff --git a/deps/jemalloc/include/jemalloc/internal/ptr_tag.h b/deps/jemalloc/include/jemalloc/internal/ptr_tag.h
+new file mode 100644
+index 000000000..5c82f81c8
+--- /dev/null
++++ b/deps/jemalloc/include/jemalloc/internal/ptr_tag.h
+@@ -0,0 +1,38 @@
++#ifndef JEMALLOC_INTERNAL_PTR_TAG_H
++#define JEMALLOC_INTERNAL_PTR_TAG_H
++
++#include "jemalloc/internal/sc.h"
++
++#ifdef JEMALLOC_PTR_TAG
++
++#define PTR_TAG_MASK    ((uintptr_t)0xFF00000000000000ULL)
++#define PTR_ADDR_MASK   ((uintptr_t)0x00FFFFFFFFFFFFFFULL)
++#define PTR_TAG_OFFSET  1
++#define PTR_TAG_SHIFT   56
++
++static inline void *
++ptr_tag_set(void *ptr, szind_t szind) {
++	assert(szind + PTR_TAG_OFFSET <= 0xFF);
++	return (void *)(((uintptr_t)ptr & PTR_ADDR_MASK) |
++	    ((uintptr_t)(szind + PTR_TAG_OFFSET) << PTR_TAG_SHIFT));
++}
++
++static inline szind_t
++ptr_tag_get(const void *ptr) {
++	szind_t tag = (szind_t)(((uintptr_t)ptr >> PTR_TAG_SHIFT) & 0xFF);
++	return tag - PTR_TAG_OFFSET;
++}
++
++static inline void *
++ptr_tag_untag(const void *ptr) {
++	return (void *)((uintptr_t)ptr & PTR_ADDR_MASK);
++}
++
++static inline bool
++ptr_is_tagged(const void *ptr) {
++	return ((uintptr_t)ptr & PTR_TAG_MASK) != 0;
++}
++
++#endif
++
++#endif
+diff --git a/deps/jemalloc/include/jemalloc/internal/tcache_types.h b/deps/jemalloc/include/jemalloc/internal/tcache_types.h
+index dce69382e..33f40cf1a 100644
+--- a/deps/jemalloc/include/jemalloc/internal/tcache_types.h
++++ b/deps/jemalloc/include/jemalloc/internal/tcache_types.h
+@@ -41,7 +41,7 @@ typedef struct tcaches_s tcaches_t;
+  * full GC sweeps.  Integer rounding may cause the actual number to be
+  * slightly higher, since GC is performed incrementally.
+  */
+-#define TCACHE_GC_SWEEP			8192
++#define TCACHE_GC_SWEEP			65536
+ 
+ /* Number of tcache allocation/deallocation events between incremental GCs. */
+ #define TCACHE_GC_INCR							\
+diff --git a/deps/jemalloc/src/jemalloc.c b/deps/jemalloc/src/jemalloc.c
+index 97da1ee72..d64a5e3d6 100644
+--- a/deps/jemalloc/src/jemalloc.c
++++ b/deps/jemalloc/src/jemalloc.c
+@@ -19,6 +19,10 @@
+ #include "jemalloc/internal/sz.h"
+ #include "jemalloc/internal/ticker.h"
+ #include "jemalloc/internal/util.h"
++#ifdef JEMALLOC_PTR_TAG
++#include <sys/prctl.h>
++#include "jemalloc/internal/ptr_tag.h"
++#endif
+ 
+ /******************************************************************************/
+ /* Data. */
+@@ -200,6 +204,14 @@ static bool had_conf_error = false;
+ static bool	malloc_init_hard_a0(void);
+ static bool	malloc_init_hard(void);
+ 
++#ifdef JEMALLOC_PTR_TAG
++JEMALLOC_ATTR(constructor)
++static void
++jemalloc_enable_tagged_addr_abi(void) {
++	prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE, 0, 0, 0);
++}
++#endif
++
+ /******************************************************************************/
+ /*
+  * Begin miscellaneous support functions.
+@@ -2164,6 +2176,13 @@ imalloc_body(static_opts_t *sopts, dynamic_opts_t *dopts, tsd_t *tsd) {
+ 		assert(usize == isalloc(tsd_tsdn(tsd), allocation));
+ 		*tsd_thread_allocatedp_get(tsd) += usize;
+ 	}
++#ifdef JEMALLOC_PTR_TAG
++	if (dopts->alignment != 0) {
++		allocation = ptr_tag_set(allocation, sz_size2index(usize));
++	} else {
++		allocation = ptr_tag_set(allocation, ind);
++	}
++#endif
+ 
+ 	if (sopts->slow) {
+ 		UTRACE(0, size, allocation);
+@@ -2379,6 +2398,9 @@ je_malloc(size_t size) {
+ 			tcache->prof_accumbytes += usize;
+ 		}
+ 
++#ifdef JEMALLOC_PTR_TAG
++		ret = ptr_tag_set(ret, ind);
++#endif
+ 		LOG("core.malloc.exit", "result: %p", ret);
+ 
+ 		/* Fastpath success */
+@@ -2658,6 +2680,9 @@ je_realloc(void *ptr, size_t arg_size) {
+ 	size_t size = arg_size;
+ 
+ 	LOG("core.realloc.entry", "ptr: %p, size: %zu\n", ptr, size);
++#ifdef JEMALLOC_PTR_TAG
++		ptr = ptr_tag_untag(ptr);
++#endif
+ 
+ 	if (unlikely(size == 0)) {
+ 		if (ptr != NULL) {
+@@ -2709,9 +2734,13 @@ je_realloc(void *ptr, size_t arg_size) {
+ 				    &alloc_ctx, &hook_args);
+ 			}
+ 		} else {
++#ifdef JEMALLOC_PTR_TAG
++			usize = sz_s2u(size);
++#else
+ 			if (config_stats) {
+ 				usize = sz_s2u(size);
+ 			}
++#endif
+ 			ret = iralloc(tsd, ptr, old_usize, size, 0, false,
+ 			    &hook_args);
+ 		}
+@@ -2762,6 +2791,10 @@ je_realloc(void *ptr, size_t arg_size) {
+ 	UTRACE(ptr, size, ret);
+ 	check_entry_exit_locking(tsdn);
+ 
++#ifdef JEMALLOC_PTR_TAG
++		ret = ptr_tag_set(ret, sz_size2index(usize));
++#endif
++
+ 	LOG("core.realloc.exit", "result: %p", ret);
+ 	return ret;
+ }
+@@ -2863,6 +2896,10 @@ JEMALLOC_EXPORT void JEMALLOC_NOTHROW
+ je_free(void *ptr) {
+ 	LOG("core.free.entry", "ptr: %p", ptr);
+ 
++#ifdef JEMALLOC_PTR_TAG
++		ptr = ptr_tag_untag(ptr);
++#endif
++
+ 	if (!free_fastpath(ptr, 0, false)) {
+ 		free_default(ptr);
+ 	}
+@@ -3490,6 +3527,10 @@ je_dallocx(void *ptr, int flags) {
+ 	assert(ptr != NULL);
+ 	assert(malloc_initialized() || IS_INITIALIZER);
+ 
++#ifdef JEMALLOC_PTR_TAG
++	ptr = ptr_tag_untag(ptr);
++#endif
++
+ 	tsd_t *tsd = tsd_fetch();
+ 	bool fast = tsd_fast(tsd);
+ 	check_entry_exit_locking(tsd_tsdn(tsd));
+@@ -3727,6 +3768,16 @@ je_malloc_usable_size(JEMALLOC_USABLE_SIZE_CONST void *ptr) {
+ 
+ 	assert(malloc_initialized() || IS_INITIALIZER);
+ 
++#ifdef JEMALLOC_PTR_TAG
++	if (ptr_is_tagged(ptr)) {
++		szind_t szind = ptr_tag_get(ptr);
++		assert(szind < SC_NSIZES);
++		ret = sz_index2size(szind);
++		LOG("core.malloc_usable_size.exit", "result: %zu (tagged)", ret);
++		return ret;
++	}
++#endif
++
+ 	tsdn = tsdn_fetch();
+ 	check_entry_exit_locking(tsdn);
+ 
+@@ -3927,5 +3978,8 @@ jemalloc_postfork_child(void) {
+ JEMALLOC_EXPORT int JEMALLOC_NOTHROW
+ get_defrag_hint(void* ptr) {
+ 	assert(ptr != NULL);
++#ifdef JEMALLOC_PTR_TAG
++	ptr = ptr_tag_untag(ptr);
++#endif
+ 	return iget_defrag_hint(TSDN_NULL, ptr);
+ }
+diff --git a/src/zmalloc.c b/src/zmalloc.c
+index 0ace61ffb..a18046327 100644
+--- a/src/zmalloc.c
++++ b/src/zmalloc.c
+@@ -31,6 +31,9 @@
+ #include "fmacros.h"
+ #include "config.h"
+ #include "solarisfixes.h"
++#ifdef JEMALLOC_PTR_TAG
++#include "deps/jemalloc/include/jemalloc/internal/ptr_tag.h"
++#endif
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -422,6 +425,9 @@ void zmalloc_set_oom_handler(void (*oom_handler)(size_t)) {
+ void zmadvise_dontneed(void *ptr) {
+ #if defined(USE_JEMALLOC) && defined(__linux__)
+     static size_t page_size = 0;
++#ifdef JEMALLOC_PTR_TAG
++    ptr = ptr_tag_untag(ptr);
++#endif
+     if (page_size == 0) page_size = sysconf(_SC_PAGESIZE);
+     size_t page_size_mask = page_size - 1;
+ 
+-- 
+2.33.0
+

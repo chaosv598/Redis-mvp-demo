@@ -1,0 +1,43 @@
+id: redis-7.0.15-0003
+title: Adapt jemalloc 5.2.1 ARM64 pointer-tag and GC strategy optimize
+project: redis
+type: perf
+status: Downstream-Only
+risk_level: medium
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 7.0.15
+  tag: 7.0.15
+  commit: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
+owner:
+  team: sig-multimedia
+  person: yinbin@boostkit
+created_at: 2026-05-21
+last_updated_at: 2026-07-10
+last_rebased_at: 2026-07-10
+applies_to:
+  - 7.0.15
+applies_on_top: []
+upstream:
+  status: Submitted-Upstream
+  url: https://github.com/redis/redis
+  issue: null
+  pr: https://github.com/redis/jemalloc/pull/TBD
+  upstream_commit: null
+requirement:
+  id: REQ-2026-KUNPENG-MEM
+  description: ARM64 MTE pointer tagging + GC strategy for jemalloc inside Redis
+validation:
+  build:
+    required: true
+    matrix: [kunpeng-arm64-gcc]
+  tests: [redis-smoke, memcheck-stress]
+  performance:
+    required: true
+    benchmark: redis-bench-mem
+    baseline_version: 7.0.15
+remove_when:
+  condition: Upstream jemalloc merges equivalent
+  version_gte: 7.2.0
+  upstream_commit: null
+notes: touches deps/jemalloc internal headers — rebase carefully on minor upgrades.

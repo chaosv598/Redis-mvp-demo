@@ -1,0 +1,42 @@
+# 上游源码(任何人都不应该 commit)
+/src/
+/storage/
+/sql/
+/include/
+*.tar.gz
+*.tar.xz
+*.tgz
+
+# OS 打包产物
+*.spec
+*.rpm
+*.deb
+*.dsc
+*.changes
+/SPECS/
+/RPMS/
+/SOURCES/
+/BUILD/
+/SRPMS/
+Dockerfile
+docker-compose*.yml
+build.sh
+
+# IDE / 构建缓存
+.vscode/
+.idea/
+.cache/
+*.o
+*.lo
+*.la
+*.so
+*.a
+
+# CI 产物(本地),不入仓
+versions/*/reports/*.json
+versions/*/tests/.tmp/
+.DS_Store
+*.swp
+
+# 一次性迁移产物
+/.migration-backup/

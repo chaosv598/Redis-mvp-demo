@@ -1,0 +1,73 @@
+apiVersion: boostkit.io/v1
+kind: PatchOverlay
+metadata:
+  name: redis
+  description: Redis 6/7 patch overlay for Kunpeng ARM
+  owner: sig-multimedia@boostkit
+  owners:
+    - huyizhen@boostkit
+    - twwang@boostkit
+  lastReviewed: 2026-07-10
+  mode: standard
+upstream:
+  type: tarball
+  url: https://github.com/redis/redis
+  versions:
+    - version: 6.0.20
+      baseline:
+        ref: 6.0.20
+        sha: c5f61c4e22acaff35a7916056c2b3a82e62a5f1d
+        fetchedAt: 2026-02-24
+      architectures:
+        kunpeng-arm64:
+          applyOrder: [redis-6.0.20-0001]
+        x86_64:
+          applyOrder: []
+    - version: 7.0.15
+      baseline:
+        ref: 7.0.15
+        sha: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
+        fetchedAt: 2026-07-01
+      architectures:
+        kunpeng-arm64:
+          applyOrder:
+            - redis-7.0.15-0001
+            - redis-7.0.15-0002
+            - redis-7.0.15-0003
+        x86_64:
+          applyOrder: []
+patches:
+  - id: redis-6.0.20-0001
+    file: versions/redis-6.0.20/patches/0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch
+    metadata: versions/redis-6.0.20/metadata/0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.yaml
+  - id: redis-7.0.15-0001
+    file: versions/redis-7.0.15/patches/0001-hw-kunpeng-adapt-iouring.patch
+    metadata: versions/redis-7.0.15/metadata/0001-hw-kunpeng-adapt-iouring.yaml
+  - id: redis-7.0.15-0002
+    file: versions/redis-7.0.15/patches/0002-perf-kunpeng-adapt-dtoe.patch
+    metadata: versions/redis-7.0.15/metadata/0002-perf-kunpeng-adapt-dtoe.yaml
+  - id: redis-7.0.15-0003
+    file: versions/redis-7.0.15/patches/0003-perf-jemalloc-arm64-pointer-tag-and-gc.patch
+    metadata: versions/redis-7.0.15/metadata/0003-perf-jemalloc-arm64-pointer-tag-and-gc.yaml
+ci:
+  gates:
+    - name: doctor
+      cmd: python tools/doctor.py
+      blocking: true
+    - name: lint
+      cmd: python tools/lint.py boostkit.yaml
+      blocking: true
+    - name: check-series
+      cmd: python tools/check-series.py
+      blocking: true
+    - name: check-owners
+      cmd: python tools/check-owners.py OWNERS
+      blocking: true
+    - name: check-apply
+      cmd: bash tools/check-apply.sh
+      blocking: true
+    - name: check-tag
+      cmd: bash tools/check-tag.sh
+      blocking: true
+kernelSupport:
+  enabled: false

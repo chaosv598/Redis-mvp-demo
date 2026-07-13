@@ -1,0 +1,44 @@
+id: redis-7.0.15-0002
+title: Enable dtoe (DMA-to-engine) network optimization on Kunpeng
+project: redis
+type: perf
+status: Downstream-Only
+risk_level: medium
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 7.0.15
+  tag: 7.0.15
+  commit: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
+owner:
+  team: sig-multimedia
+  person: twwang@boostkit
+created_at: 2026-03-16
+last_updated_at: 2026-07-10
+last_rebased_at: 2026-07-10
+applies_to:
+  - 7.0.15
+applies_on_top:
+  - redis-7.0.15-0001
+upstream:
+  status: Not-Submitted
+  url: null
+  issue: null
+  pr: null
+  upstream_commit: null
+requirement:
+  id: REQ-2026-KUNPENG-DTOE
+  description: Kunpeng DMA-to-engine offload for Redis RESP traffic
+validation:
+  build:
+    required: true
+    matrix: [kunpeng-arm64-gcc]
+  tests: [redis-smoke, dtoe-throughput]
+  performance:
+    required: true
+    benchmark: redis-bench-dtoe
+    baseline_version: 7.0.15
+remove_when:
+  condition: No upstream equivalent expected (Kunpeng-specific HW)
+  version_gte: null
+  upstream_commit: null
+notes: depends on 0001 (io_uring) — see applies_on_top DAG.

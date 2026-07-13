@@ -1,0 +1,1058 @@
+From deed3bde21389114d133f0b661ed89a29836613b Mon Sep 17 00:00:00 2001
+From: twwang1 <920347125@qq.com>
+Date: Mon, 16 Mar 2026 11:48:50 +0800
+Subject: [PATCH] =?UTF-8?q?dtoe=5F=E9=80=82=E9=85=8D?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ redis.conf                   |   6 +-
+ src/Makefile                 |   4 +-
+ src/ae.h                     |   1 +
+ src/ae_dtoe.c                | 499 +++++++++++++++++++++++++++++++++++
+ src/ae_epoll_dtoe.c          | 161 +++++++++++
+ src/config.c                 |  48 ++++
+ src/connection.c             |  60 ++++-
+ src/connection.h             |   1 +
+ src/networking.c             |  17 ++
+ src/server.c                 |  16 ++
+ src/server.h                 |   2 +
+ tests/unit/introspection.tcl |   1 +
+ 12 files changed, 801 insertions(+), 15 deletions(-)
+ create mode 100644 src/ae_dtoe.c
+ create mode 100644 src/ae_epoll_dtoe.c
+
+diff --git a/redis.conf b/redis.conf
+index 0431c3742..b2603fcaf 100644
+--- a/redis.conf
++++ b/redis.conf
+@@ -144,7 +144,7 @@ port 6379
+ # will silently truncate it to the value of /proc/sys/net/core/somaxconn so
+ # make sure to raise both the value of somaxconn and tcp_max_syn_backlog
+ # in order to get the desired effect.
+-tcp-backlog 511
++tcp-backlog 2048
+ 
+ # Unix socket.
+ #
+@@ -2273,4 +2273,6 @@ jemalloc-bg-thread yes
+ # by setting the following config which takes a space delimited list of warnings
+ # to suppress
+ #
+-# ignore-warnings ARM64-COW-BUG
++ ignore-warnings ARM64-COW-BUG
++ save ""
++ dtoe-ip ""
+diff --git a/src/Makefile b/src/Makefile
+index e4f7d9068..fd22552fc 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -316,7 +316,7 @@ endif
+ 
+ REDIS_SERVER_NAME=redis-server$(PROG_SUFFIX)
+ REDIS_SENTINEL_NAME=redis-sentinel$(PROG_SUFFIX)
+-REDIS_SERVER_OBJ=adlist.o quicklist.o ae.o anet.o dict.o server.o sds.o zmalloc.o lzf_c.o lzf_d.o pqsort.o zipmap.o sha1.o ziplist.o release.o networking.o util.o object.o db.o replication.o rdb.o t_string.o t_list.o t_set.o t_zset.o t_hash.o config.o aof.o pubsub.o multi.o debug.o sort.o intset.o syncio.o cluster.o crc16.o endianconv.o slowlog.o eval.o bio.o rio.o rand.o memtest.o syscheck.o crcspeed.o crc64.o bitops.o sentinel.o notify.o setproctitle.o blocked.o hyperloglog.o latency.o sparkline.o redis-check-rdb.o redis-check-aof.o geo.o lazyfree.o module.o evict.o expire.o geohash.o geohash_helper.o childinfo.o defrag.o siphash.o rax.o t_stream.o listpack.o localtime.o lolwut.o lolwut5.o lolwut6.o acl.o tracking.o connection.o tls.o sha256.o timeout.o setcpuaffinity.o monotonic.o mt19937-64.o resp_parser.o call_reply.o script_lua.o script.o functions.o function_lua.o commands.o
++REDIS_SERVER_OBJ=adlist.o quicklist.o ae_dtoe.o anet.o dict.o server.o sds.o zmalloc.o lzf_c.o lzf_d.o pqsort.o zipmap.o sha1.o ziplist.o release.o networking.o util.o object.o db.o replication.o rdb.o t_string.o t_list.o t_set.o t_zset.o t_hash.o config.o aof.o pubsub.o multi.o debug.o sort.o intset.o syncio.o cluster.o crc16.o endianconv.o slowlog.o eval.o bio.o rio.o rand.o memtest.o syscheck.o crcspeed.o crc64.o bitops.o sentinel.o notify.o setproctitle.o blocked.o hyperloglog.o latency.o sparkline.o redis-check-rdb.o redis-check-aof.o geo.o lazyfree.o module.o evict.o expire.o geohash.o geohash_helper.o childinfo.o defrag.o siphash.o rax.o t_stream.o listpack.o localtime.o lolwut.o lolwut5.o lolwut6.o acl.o tracking.o connection.o tls.o sha256.o timeout.o setcpuaffinity.o monotonic.o mt19937-64.o resp_parser.o call_reply.o script_lua.o script.o functions.o function_lua.o commands.o
+ REDIS_CLI_NAME=redis-cli$(PROG_SUFFIX)
+ REDIS_CLI_OBJ=anet.o adlist.o dict.o redis-cli.o zmalloc.o release.o ae.o redisassert.o crcspeed.o crc64.o siphash.o crc16.o monotonic.o cli_common.o mt19937-64.o
+ REDIS_BENCHMARK_NAME=redis-benchmark$(PROG_SUFFIX)
+@@ -371,7 +371,7 @@ endif
+ 
+ # redis-server
+ $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ)
+-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a ../deps/hdr_histogram/libhdrhistogram.a $(FINAL_LIBS)
++	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a ../deps/hdr_histogram/libhdrhistogram.a $(FINAL_LIBS) -lkbdtoe -lknet_frame
+ 
+ # redis-sentinel
+ $(REDIS_SENTINEL_NAME): $(REDIS_SERVER_NAME)
+diff --git a/src/ae.h b/src/ae.h
+index 70ce8a2d5..149dd6dab 100644
+--- a/src/ae.h
++++ b/src/ae.h
+@@ -53,6 +53,7 @@
+ #define AE_DONT_WAIT (1<<2)
+ #define AE_CALL_BEFORE_SLEEP (1<<3)
+ #define AE_CALL_AFTER_SLEEP (1<<4)
++#define AE_USED_DTOE_FEATURE (1<<5)
+ 
+ #define AE_NOMORE -1
+ #define AE_DELETED_EVENT_ID -1
+diff --git a/src/ae_dtoe.c b/src/ae_dtoe.c
+new file mode 100644
+index 000000000..1daea7e43
+--- /dev/null
++++ b/src/ae_dtoe.c
+@@ -0,0 +1,499 @@
++/* A simple event-driven programming library. Originally I wrote this code
++ * for the Jim's event-loop (Jim is a Tcl interpreter) but later translated
++ * it in form of a library for easy reuse.
++ *
++ * Copyright (c) 2006-2010, Salvatore Sanfilippo <antirez at gmail dot com>
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *
++ *   * Redistributions of source code must retain the above copyright notice,
++ *     this list of conditions and the following disclaimer.
++ *   * Redistributions in binary form must reproduce the above copyright
++ *     notice, this list of conditions and the following disclaimer in the
++ *     documentation and/or other materials provided with the distribution.
++ *   * Neither the name of Redis nor the names of its contributors may be used
++ *     to endorse or promote products derived from this software without
++ *     specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "ae.h"
++#include "anet.h"
++#include "redisassert.h"
++
++#include <stdio.h>
++#include <sys/time.h>
++#include <sys/types.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <poll.h>
++#include <string.h>
++#include <time.h>
++#include <errno.h>
++
++#include "zmalloc.h"
++#include "config.h"
++
++/* Include the best multiplexing layer supported by this system.
++ * The following should be ordered by performances, descending. */
++#include "ae_epoll_dtoe.c"
++
++aeEventLoop *aeCreateEventLoop(int setsize) {
++    aeEventLoop *eventLoop;
++    int i;
++
++    monotonicInit();    /* just in case the calling app didn't initialize */
++
++    if ((eventLoop = zmalloc(sizeof(*eventLoop))) == NULL) goto err;
++    eventLoop->events = zmalloc(sizeof(aeFileEvent)*setsize);
++    eventLoop->fired = zmalloc(sizeof(aeFiredEvent)*setsize);
++    if (eventLoop->events == NULL || eventLoop->fired == NULL) goto err;
++    eventLoop->setsize = setsize;
++    eventLoop->timeEventHead = NULL;
++    eventLoop->timeEventNextId = 0;
++    eventLoop->stop = 0;
++    eventLoop->maxfd = -1;
++    eventLoop->beforesleep = NULL;
++    eventLoop->aftersleep = NULL;
++    eventLoop->flags = 0;
++    if (aeApiCreate(eventLoop) == -1) goto err;
++    /* Events with mask == AE_NONE are not set. So let's initialize the
++     * vector with it. */
++    for (i = 0; i < setsize; i++)
++        eventLoop->events[i].mask = AE_NONE;
++    return eventLoop;
++
++err:
++    if (eventLoop) {
++        zfree(eventLoop->events);
++        zfree(eventLoop->fired);
++        zfree(eventLoop);
++    }
++    return NULL;
++}
++
++/* Return the current set size. */
++int aeGetSetSize(aeEventLoop *eventLoop) {
++    return eventLoop->setsize;
++}
++
++/* Tells the next iteration/s of the event processing to set timeout of 0. */
++void aeSetDontWait(aeEventLoop *eventLoop, int noWait) {
++    if (noWait)
++        eventLoop->flags |= AE_DONT_WAIT;
++    else
++        eventLoop->flags &= ~AE_DONT_WAIT;
++}
++
++/* Resize the maximum set size of the event loop.
++ * If the requested set size is smaller than the current set size, but
++ * there is already a file descriptor in use that is >= the requested
++ * set size minus one, AE_ERR is returned and the operation is not
++ * performed at all.
++ *
++ * Otherwise AE_OK is returned and the operation is successful. */
++int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {
++    int i;
++
++    if (setsize == eventLoop->setsize) return AE_OK;
++    if (eventLoop->maxfd >= setsize) return AE_ERR;
++    if (aeApiResize(eventLoop,setsize) == -1) return AE_ERR;
++
++    eventLoop->events = zrealloc(eventLoop->events,sizeof(aeFileEvent)*setsize);
++    eventLoop->fired = zrealloc(eventLoop->fired,sizeof(aeFiredEvent)*setsize);
++    eventLoop->setsize = setsize;
++
++    /* Make sure that if we created new slots, they are initialized with
++     * an AE_NONE mask. */
++    for (i = eventLoop->maxfd+1; i < setsize; i++)
++        eventLoop->events[i].mask = AE_NONE;
++    return AE_OK;
++}
++
++void aeDeleteEventLoop(aeEventLoop *eventLoop) {
++    aeApiFree(eventLoop);
++    zfree(eventLoop->events);
++    zfree(eventLoop->fired);
++
++    /* Free the time events list. */
++    aeTimeEvent *next_te, *te = eventLoop->timeEventHead;
++    while (te) {
++        next_te = te->next;
++        zfree(te);
++        te = next_te;
++    }
++    zfree(eventLoop);
++}
++
++void aeStop(aeEventLoop *eventLoop) {
++    eventLoop->stop = 1;
++}
++
++int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
++        aeFileProc *proc, void *clientData)
++{
++    if (fd >= eventLoop->setsize) {
++        errno = ERANGE;
++        return AE_ERR;
++    }
++    aeFileEvent *fe = &eventLoop->events[fd];
++
++    if (aeApiAddEvent(eventLoop, fd, mask) == -1)
++        return AE_ERR;
++    fe->mask |= mask;
++    if (mask & AE_READABLE) fe->rfileProc = proc;
++    if (mask & AE_WRITABLE) fe->wfileProc = proc;
++    fe->clientData = clientData;
++    if (fd > eventLoop->maxfd)
++        eventLoop->maxfd = fd;
++    return AE_OK;
++}
++
++void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
++{
++    if (fd >= eventLoop->setsize) return;
++    aeFileEvent *fe = &eventLoop->events[fd];
++    if (fe->mask == AE_NONE) return;
++
++    /* We want to always remove AE_BARRIER if set when AE_WRITABLE
++     * is removed. */
++    if (mask & AE_WRITABLE) mask |= AE_BARRIER;
++
++    aeApiDelEvent(eventLoop, fd, mask);
++    fe->mask = fe->mask & (~mask);
++    if (fd == eventLoop->maxfd && fe->mask == AE_NONE) {
++        /* Update the max fd */
++        int j;
++
++        for (j = eventLoop->maxfd-1; j >= 0; j--)
++            if (eventLoop->events[j].mask != AE_NONE) break;
++        eventLoop->maxfd = j;
++    }
++}
++
++void *aeGetFileClientData(aeEventLoop *eventLoop, int fd) {
++    if (fd >= eventLoop->setsize) return NULL;
++    aeFileEvent *fe = &eventLoop->events[fd];
++    if (fe->mask == AE_NONE) return NULL;
++
++    return fe->clientData;
++}
++
++int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {
++    if (fd >= eventLoop->setsize) return 0;
++    aeFileEvent *fe = &eventLoop->events[fd];
++
++    return fe->mask;
++}
++
++long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
++        aeTimeProc *proc, void *clientData,
++        aeEventFinalizerProc *finalizerProc)
++{
++    long long id = eventLoop->timeEventNextId++;
++    aeTimeEvent *te;
++
++    te = zmalloc(sizeof(*te));
++    if (te == NULL) return AE_ERR;
++    te->id = id;
++    te->when = getMonotonicUs() + milliseconds * 1000;
++    te->timeProc = proc;
++    te->finalizerProc = finalizerProc;
++    te->clientData = clientData;
++    te->prev = NULL;
++    te->next = eventLoop->timeEventHead;
++    te->refcount = 0;
++    if (te->next)
++        te->next->prev = te;
++    eventLoop->timeEventHead = te;
++    return id;
++}
++
++int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
++{
++    aeTimeEvent *te = eventLoop->timeEventHead;
++    while(te) {
++        if (te->id == id) {
++            te->id = AE_DELETED_EVENT_ID;
++            return AE_OK;
++        }
++        te = te->next;
++    }
++    return AE_ERR; /* NO event with the specified ID found */
++}
++
++/* How many microseconds until the first timer should fire.
++ * If there are no timers, -1 is returned.
++ *
++ * Note that's O(N) since time events are unsorted.
++ * Possible optimizations (not needed by Redis so far, but...):
++ * 1) Insert the event in order, so that the nearest is just the head.
++ *    Much better but still insertion or deletion of timers is O(N).
++ * 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
++ */
++static int64_t usUntilEarliestTimer(aeEventLoop *eventLoop) {
++    aeTimeEvent *te = eventLoop->timeEventHead;
++    if (te == NULL) return -1;
++
++    aeTimeEvent *earliest = NULL;
++    while (te) {
++        if (!earliest || te->when < earliest->when)
++            earliest = te;
++        te = te->next;
++    }
++
++    monotime now = getMonotonicUs();
++    return (now >= earliest->when) ? 0 : earliest->when - now;
++}
++
++/* Process time events */
++static int processTimeEvents(aeEventLoop *eventLoop) {
++    int processed = 0;
++    aeTimeEvent *te;
++    long long maxId;
++
++    te = eventLoop->timeEventHead;
++    maxId = eventLoop->timeEventNextId-1;
++    monotime now = getMonotonicUs();
++    while(te) {
++        long long id;
++
++        /* Remove events scheduled for deletion. */
++        if (te->id == AE_DELETED_EVENT_ID) {
++            aeTimeEvent *next = te->next;
++            /* If a reference exists for this timer event,
++             * don't free it. This is currently incremented
++             * for recursive timerProc calls */
++            if (te->refcount) {
++                te = next;
++                continue;
++            }
++            if (te->prev)
++                te->prev->next = te->next;
++            else
++                eventLoop->timeEventHead = te->next;
++            if (te->next)
++                te->next->prev = te->prev;
++            if (te->finalizerProc) {
++                te->finalizerProc(eventLoop, te->clientData);
++                now = getMonotonicUs();
++            }
++            zfree(te);
++            te = next;
++            continue;
++        }
++
++        /* Make sure we don't process time events created by time events in
++         * this iteration. Note that this check is currently useless: we always
++         * add new timers on the head, however if we change the implementation
++         * detail, this check may be useful again: we keep it here for future
++         * defense. */
++        if (te->id > maxId) {
++            te = te->next;
++            continue;
++        }
++
++        if (te->when <= now) {
++            int retval;
++
++            id = te->id;
++            te->refcount++;
++            retval = te->timeProc(eventLoop, id, te->clientData);
++            te->refcount--;
++            processed++;
++            now = getMonotonicUs();
++            if (retval != AE_NOMORE) {
++                te->when = now + retval * 1000;
++            } else {
++                te->id = AE_DELETED_EVENT_ID;
++            }
++        }
++        te = te->next;
++    }
++    return processed;
++}
++
++/* Process every pending time event, then every pending file event
++ * (that may be registered by time event callbacks just processed).
++ * Without special flags the function sleeps until some file event
++ * fires, or when the next time event occurs (if any).
++ *
++ * If flags is 0, the function does nothing and returns.
++ * if flags has AE_ALL_EVENTS set, all the kind of events are processed.
++ * if flags has AE_FILE_EVENTS set, file events are processed.
++ * if flags has AE_TIME_EVENTS set, time events are processed.
++ * if flags has AE_DONT_WAIT set, the function returns ASAP once all
++ * the events that can be handled without a wait are processed.
++ * if flags has AE_CALL_AFTER_SLEEP set, the aftersleep callback is called.
++ * if flags has AE_CALL_BEFORE_SLEEP set, the beforesleep callback is called.
++ *
++ * The function returns the number of events processed. */
++int aeProcessEvents(aeEventLoop *eventLoop, int flags)
++{
++    int processed = 0, numevents;
++
++    /* Nothing to do? return ASAP */
++    if (!(flags & AE_TIME_EVENTS) && !(flags & AE_FILE_EVENTS)) return 0;
++
++    /* Note that we want to call select() even if there are no
++     * file events to process as long as we want to process time
++     * events, in order to sleep until the next time event is ready
++     * to fire. */
++    if (eventLoop->maxfd != -1 ||
++        ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
++        int j;
++        struct timeval tv, *tvp;
++        int64_t usUntilTimer = -1;
++
++        if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
++            usUntilTimer = usUntilEarliestTimer(eventLoop);
++
++        if (usUntilTimer >= 0) {
++            tv.tv_sec = usUntilTimer / 1000000;
++            tv.tv_usec = usUntilTimer % 1000000;
++            tvp = &tv;
++        } else {
++            /* If we have to check for events but need to return
++             * ASAP because of AE_DONT_WAIT we need to set the timeout
++             * to zero */
++            if (flags & AE_DONT_WAIT) {
++                tv.tv_sec = tv.tv_usec = 0;
++                tvp = &tv;
++            } else {
++                /* Otherwise we can block */
++                tvp = NULL; /* wait forever */
++            }
++        }
++
++        if (eventLoop->flags & AE_DONT_WAIT) {
++            tv.tv_sec = tv.tv_usec = 0;
++            tvp = &tv;
++        }
++
++        if (eventLoop->beforesleep != NULL && flags & AE_CALL_BEFORE_SLEEP)
++            eventLoop->beforesleep(eventLoop);
++
++        /* Call the multiplexing API, will return only on timeout or when
++         * some event fires. */
++        numevents = aeApiPoll(eventLoop, tvp);
++
++        /* After sleep callback. */
++        if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
++            eventLoop->aftersleep(eventLoop);
++
++        for (j = 0; j < numevents; j++) {
++            int fd = eventLoop->fired[j].fd;
++            aeFileEvent *fe = &eventLoop->events[fd];
++            int mask = eventLoop->fired[j].mask;
++            int fired = 0; /* Number of events fired for current fd. */
++
++            /* Normally we execute the readable event first, and the writable
++             * event later. This is useful as sometimes we may be able
++             * to serve the reply of a query immediately after processing the
++             * query.
++             *
++             * However if AE_BARRIER is set in the mask, our application is
++             * asking us to do the reverse: never fire the writable event
++             * after the readable. In such a case, we invert the calls.
++             * This is useful when, for instance, we want to do things
++             * in the beforeSleep() hook, like fsyncing a file to disk,
++             * before replying to a client. */
++            int invert = fe->mask & AE_BARRIER;
++
++            /* Note the "fe->mask & mask & ..." code: maybe an already
++             * processed event removed an element that fired and we still
++             * didn't processed, so we check if the event is still valid.
++             *
++             * Fire the readable event if the call sequence is not
++             * inverted. */
++            if (!invert && fe->mask & mask & AE_READABLE) {
++                fe->rfileProc(eventLoop,fd,fe->clientData,mask);
++                fired++;
++                fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
++            }
++
++            /* Fire the writable event. */
++            if (fe->mask & mask & AE_WRITABLE) {
++                if (!fired || fe->wfileProc != fe->rfileProc) {
++                    fe->wfileProc(eventLoop,fd,fe->clientData,mask);
++                    fired++;
++                }
++            }
++
++            /* If we have to invert the call, fire the readable event now
++             * after the writable one. */
++            if (invert) {
++                fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
++                if ((fe->mask & mask & AE_READABLE) &&
++                    (!fired || fe->wfileProc != fe->rfileProc))
++                {
++                    fe->rfileProc(eventLoop,fd,fe->clientData,mask);
++                    fired++;
++                }
++            }
++
++            processed++;
++        }
++    }
++    /* Check time events */
++    if (flags & AE_TIME_EVENTS)
++        processed += processTimeEvents(eventLoop);
++
++    return processed; /* return the number of processed file/time events */
++}
++
++/* Wait for milliseconds until the given file descriptor becomes
++ * writable/readable/exception */
++int aeWait(int fd, int mask, long long milliseconds) {
++    struct pollfd pfd;
++    int retmask = 0, retval;
++
++    memset(&pfd, 0, sizeof(pfd));
++    pfd.fd = fd;
++    if (mask & AE_READABLE) pfd.events |= POLLIN;
++    if (mask & AE_WRITABLE) pfd.events |= POLLOUT;
++
++    if ((retval = poll(&pfd, 1, milliseconds))== 1) {
++        if (pfd.revents & POLLIN) retmask |= AE_READABLE;
++        if (pfd.revents & POLLOUT) retmask |= AE_WRITABLE;
++        if (pfd.revents & POLLERR) retmask |= AE_WRITABLE;
++        if (pfd.revents & POLLHUP) retmask |= AE_WRITABLE;
++        return retmask;
++    } else {
++        return retval;
++    }
++}
++
++void aeMain(aeEventLoop *eventLoop) {
++    eventLoop->stop = 0;
++    while (!eventLoop->stop) {
++        aeProcessEvents(eventLoop, AE_ALL_EVENTS|
++                                   AE_CALL_BEFORE_SLEEP|
++                                   AE_CALL_AFTER_SLEEP);
++    }
++}
++
++char *aeGetApiName(void) {
++    return aeApiName();
++}
++
++void aeSetBeforeSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *beforesleep) {
++    eventLoop->beforesleep = beforesleep;
++}
++
++void aeSetAfterSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *aftersleep) {
++    eventLoop->aftersleep = aftersleep;
++}
+diff --git a/src/ae_epoll_dtoe.c b/src/ae_epoll_dtoe.c
+new file mode 100644
+index 000000000..9564421a0
+--- /dev/null
++++ b/src/ae_epoll_dtoe.c
+@@ -0,0 +1,161 @@
++/* Linux epoll(2) based ae.c module
++ *
++ * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *
++ *   * Redistributions of source code must retain the above copyright notice,
++ *     this list of conditions and the following disclaimer.
++ *   * Redistributions in binary form must reproduce the above copyright
++ *     notice, this list of conditions and the following disclaimer in the
++ *     documentation and/or other materials provided with the distribution.
++ *   * Neither the name of Redis nor the names of its contributors may be used
++ *     to endorse or promote products derived from this software without
++ *     specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++#include <sys/epoll.h>
++#include "kbdtoe.h"
++
++typedef struct aeApiState {
++    int epfd;
++    struct epoll_event *events;
++} aeApiState;
++
++static int aeApiCreate(aeEventLoop *eventLoop) {
++    aeApiState *state = zmalloc(sizeof(aeApiState));
++
++    if (!state) return -1;
++    state->events = zmalloc(sizeof(struct epoll_event)*eventLoop->setsize);
++    if (!state->events) {
++        zfree(state);
++        return -1;
++    }
++    state->epfd = epoll_create(1024); /* 1024 is just a hint for the kernel */
++    if (state->epfd == -1) {
++        zfree(state->events);
++        zfree(state);
++        return -1;
++    }
++    anetCloexec(state->epfd);
++    eventLoop->apidata = state;
++    return 0;
++}
++
++static int aeApiResize(aeEventLoop *eventLoop, int setsize) {
++    aeApiState *state = eventLoop->apidata;
++
++    state->events = zrealloc(state->events, sizeof(struct epoll_event)*setsize);
++    return 0;
++}
++
++static void aeApiFree(aeEventLoop *eventLoop) {
++    aeApiState *state = eventLoop->apidata;
++
++    close(state->epfd);
++    zfree(state->events);
++    zfree(state);
++}
++
++static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
++    aeApiState *state = eventLoop->apidata;
++    struct epoll_event ee = {0}; /* avoid valgrind warning */
++    /* If the fd was already monitored for some event, we need a MOD
++     * operation. Otherwise we need an ADD operation. */
++    int op = eventLoop->events[fd].mask == AE_NONE ?
++            EPOLL_CTL_ADD : EPOLL_CTL_MOD;
++
++    ee.events = 0;
++    mask |= eventLoop->events[fd].mask; /* Merge old events */
++    if (mask & AE_READABLE) ee.events |= EPOLLIN;
++    if (mask & AE_WRITABLE) ee.events |= EPOLLOUT;
++    ee.data.fd = fd;
++    if (epoll_ctl(state->epfd,op,fd,&ee) == -1) return -1;
++    return 0;
++}
++
++static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
++    aeApiState *state = eventLoop->apidata;
++    struct epoll_event ee = {0}; /* avoid valgrind warning */
++    int mask = eventLoop->events[fd].mask & (~delmask);
++
++    ee.events = 0;
++    if (mask & AE_READABLE) ee.events |= EPOLLIN;
++    if (mask & AE_WRITABLE) ee.events |= EPOLLOUT;
++    ee.data.fd = fd;
++    if (mask != AE_NONE) {
++        epoll_ctl(state->epfd,EPOLL_CTL_MOD,fd,&ee);
++    } else {
++        /* Note, Kernel < 2.6.9 requires a non null event pointer even for
++         * EPOLL_CTL_DEL. */
++        epoll_ctl(state->epfd,EPOLL_CTL_DEL,fd,&ee);
++    }
++}
++
++static int epoll_wait_count = 0;
++#define EPOLL_WAIT_TIMES  1000
++#define DTOE_RECV_POLL_CNT  32
++static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
++    (void)(tvp);
++    aeApiState *state = eventLoop->apidata;
++    int retval = 0, numevents = 0;
++    int nr_event = 0;
++    if (eventLoop->flags & AE_USED_DTOE_FEATURE) {
++        struct knet_recv_events recv_events[eventLoop->maxfd];
++        kbdtoe_thread_poll(0, recv_events, &nr_event);
++        for (int i = 0; i < nr_event; ++i) {
++            eventLoop->fired[numevents].fd = recv_events[i].sockfd;
++            eventLoop->fired[numevents].mask |= AE_READABLE;
++            numevents++;
++        }
++        epoll_wait_count++;
++        if (epoll_wait_count >= EPOLL_WAIT_TIMES) {
++            retval = epoll_wait(state->epfd, state->events,eventLoop->setsize, 0);
++            epoll_wait_count = 0;
++        }
++    } else {
++        retval = epoll_wait(state->epfd,state->events,eventLoop->setsize,
++            tvp ? (tvp->tv_sec*1000 + (tvp->tv_usec + 999)/1000) : -1);
++    }
++    if (retval > 0) {
++        for (int k = 0; k < retval; k++) {
++            int mask = 0;
++            struct epoll_event *e = state->events + k;
++            if (e->events & EPOLLIN) mask |= AE_READABLE;
++            if (e->events & EPOLLOUT) mask |= AE_WRITABLE;
++            if (e->events & EPOLLERR) mask |= AE_WRITABLE|AE_READABLE;
++            if (e->events & EPOLLHUP) mask |= AE_WRITABLE|AE_READABLE;
++            if (!(eventLoop->flags & AE_USED_DTOE_FEATURE) || !knet_fd_is_offloaded(e->data.fd)) {
++                eventLoop->fired[numevents].fd = e->data.fd;
++                eventLoop->fired[numevents].mask = mask;
++                numevents++;
++            } else {
++                if (mask & AE_WRITABLE) {
++                    eventLoop->fired[numevents].fd = e->data.fd;
++                    eventLoop->fired[numevents].mask = AE_WRITABLE;
++                    numevents++;
++                }
++            }
++        }
++    } else if (retval == -1 && errno != EINTR) {
++        panic("aeApiPoll: epoll_wait, %s", strerror(errno));
++    }
++    return numevents;
++}
++
++static char *aeApiName(void) {
++    return "kbdtoe";
++}
+diff --git a/src/config.c b/src/config.c
+index bfb49ef9c..1ba67a4d8 100644
+--- a/src/config.c
++++ b/src/config.c
+@@ -35,6 +35,7 @@
+ #include <sys/stat.h>
+ #include <glob.h>
+ #include <string.h>
++#include <ctype.h>
+ 
+ /*-----------------------------------------------------------------------------
+  * Config file name-value maps.
+@@ -2358,6 +2359,52 @@ static int isValidAOFdirname(char *val, const char **err) {
+     return 1;
+ }
+ 
++static int checkIpv4(const char *ip)
++{
++    if (ip == NULL) {
++        return 0;
++    }
++    int num, dots = 0;
++    const char *p = ip;
++    while (*p) {
++        if (!isdigit(*p)) {
++            return 0;
++        }
++        num = 0;
++        int len = 0;
++        while (*p && isdigit(*p)) {
++            num = num * 10 + (*p - '0');
++            len++;
++            p++;
++        }
++        if (len == 0 || len > 3) {
++            return 0;
++        }
++        if (num < 0  || num > 255) {
++            return 0;
++        }
++        if (len > 1 && ip[strlen(ip) - strlen(p) -len] == '0') {
++            return 0;
++        }
++        if (*p == '.') {
++            dots++;
++            p++;
++        } else if (*p != '\0') {
++            return 0;
++        }
++    }
++    return dots == 3;
++}
++
++static int isValidIpv4(char *ip, const char **err) 
++{
++    if ((ip[0] == '\0') || (ip[0] != '\0' && checkIpv4(ip))) {
++        return 1;
++    }
++    *err = "invalid ipv4 address, please check dtoe-ip value in the redis.conf";
++    return 0;
++}
++
+ static int isValidShutdownOnSigFlags(int val, const char **err) {
+     /* Individual arguments are validated by createEnumConfig logic.
+      * We just need to ensure valid combinations here. */
+@@ -3033,6 +3080,7 @@ standardConfig static_configs[] = {
+     createStringConfig("proc-title-template", NULL, MODIFIABLE_CONFIG, ALLOW_EMPTY_STRING, server.proc_title_template, CONFIG_DEFAULT_PROC_TITLE_TEMPLATE, isValidProcTitleTemplate, updateProcTitleTemplate),
+     createStringConfig("bind-source-addr", NULL, MODIFIABLE_CONFIG, EMPTY_STRING_IS_NULL, server.bind_source_addr, NULL, NULL, NULL),
+     createStringConfig("logfile", NULL, IMMUTABLE_CONFIG, ALLOW_EMPTY_STRING, server.logfile, "", NULL, NULL),
++     createStringConfig("dtoe-ip", NULL, IMMUTABLE_CONFIG, ALLOW_EMPTY_STRING, server.dtoe_ip, "", isValidIpv4, NULL),
+ 
+     /* SDS Configs */
+     createSDSConfig("masterauth", NULL, MODIFIABLE_CONFIG | SENSITIVE_CONFIG, EMPTY_STRING_IS_NULL, server.masterauth, NULL, NULL, NULL),
+diff --git a/src/connection.c b/src/connection.c
+index f61ed2404..7a9abd8fa 100644
+--- a/src/connection.c
++++ b/src/connection.c
+@@ -138,33 +138,61 @@ void *connGetPrivateData(connection *conn) {
+     return conn->private_data;
+ }
+ 
++void connSocketDtoeCloseDoneCallback(int fd) {
++    connection *conn = server.el->events[fd].clientData;
++    // close(conn->fd);  // dtoe close 内部已经执行close 操作
++    conn->fd = -1;
++    conn->flags &=(~CONN_FLAG_DTOE);
++    if (connHasRefs(conn)) {
++        conn->flags |= CONN_FLAG_CLOSE_SCHEDULED;
++        return;
++    }
++    zfree(conn);
++}
++
++__attribute__((constructor)) void registerDtoeCloseDoneCallback() {
++    register_dtoe_close_done_callback(connSocketDtoeCloseDoneCallback);
++}
+ /* ------ Pure socket connections ------- */
+ 
+ /* A very incomplete list of implementation-specific calls.  Much of the above shall
+  * move here as we implement additional connection types.
+  */
+-
+ /* Close the connection and free resources. */
+ static void connSocketClose(connection *conn) {
+     if (conn->fd != -1) {
+         aeDeleteFileEvent(server.el,conn->fd, AE_READABLE | AE_WRITABLE);
+-        close(conn->fd);
+-        conn->fd = -1;
++        if ((conn->flags & CONN_FLAG_DTOE)) {
++            if (kbdtoe_is_conn_offload_success(conn->fd)) {
++                kbdtoe_close(conn->fd);
++                kbdtoe_conn_status_for_close(conn->fd);
++            }
++        } else {
++            close(conn->fd);
++            conn->fd = -1;
++        }
+     }
+ 
+     /* If called from within a handler, schedule the close but
+      * keep the connection until the handler returns.
+      */
+-    if (connHasRefs(conn)) {
+-        conn->flags |= CONN_FLAG_CLOSE_SCHEDULED;
+-        return;
+-    }
++    if (!(conn->flags & CONN_FLAG_DTOE)) {
++        if (connHasRefs(conn)) {
++            conn->flags |= CONN_FLAG_CLOSE_SCHEDULED;
++            return;
++        }
+ 
+-    zfree(conn);
++        zfree(conn);
++    }
+ }
+ 
+ static int connSocketWrite(connection *conn, const void *data, size_t data_len) {
+-    int ret = write(conn->fd, data, data_len);
++    int ret;
++    if (conn->flags & CONN_FLAG_DTOE) {
++        ret = kbdtoe_write(conn->fd, data, data_len);
++    } else {
++        ret = write(conn->fd, data, data_len);
++    }
+     if (ret < 0 && errno != EAGAIN) {
+         conn->last_errno = errno;
+ 
+@@ -179,7 +207,12 @@ static int connSocketWrite(connection *conn, const void *data, size_t data_len)
+ }
+ 
+ static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcnt) {
+-    int ret = writev(conn->fd, iov, iovcnt);
++    int ret;
++    if (conn->flags & CONN_FLAG_DTOE) {
++        ret = kbdtoe_writev(conn->fd, iov, iovcnt);
++    } else {
++        ret = writev(conn->fd, iov, iovcnt);
++    }
+     if (ret < 0 && errno != EAGAIN) {
+         conn->last_errno = errno;
+ 
+@@ -194,7 +227,12 @@ static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcn
+ }
+ 
+ static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
+-    int ret = read(conn->fd, buf, buf_len);
++    int ret;
++    if (conn->flags & CONN_FLAG_DTOE) {
++        ret = kbdtoe_read(conn->fd, buf, buf_len);
++    } else {
++        ret = read(conn->fd, buf, buf_len);
++    }
+     if (!ret) {
+         conn->state = CONN_STATE_CLOSED;
+     } else if (ret < 0 && errno != EAGAIN) {
+diff --git a/src/connection.h b/src/connection.h
+index dad2e2fd6..fc8e7a6ab 100644
+--- a/src/connection.h
++++ b/src/connection.h
+@@ -50,6 +50,7 @@ typedef enum {
+ 
+ #define CONN_FLAG_CLOSE_SCHEDULED   (1<<0)      /* Closed scheduled by a handler */
+ #define CONN_FLAG_WRITE_BARRIER     (1<<1)      /* Write barrier requested */
++#define CONN_FLAG_DTOE              (1<<2)      /* DTOE requested */
+ 
+ #define CONN_TYPE_SOCKET            1
+ #define CONN_TYPE_TLS               2
+diff --git a/src/networking.c b/src/networking.c
+index 90cc64d70..ba7f4be06 100644
+--- a/src/networking.c
++++ b/src/networking.c
+@@ -1229,6 +1229,18 @@ int islocalClient(client *c) {
+     return !strcmp(cip,"127.0.0.1") || !strcmp(cip,"::1");
+ }
+ 
++/* Return true if client connected can dtoe offload */
++int isDtoeClient(client *c, char *dtoe_ip) {
++    /* tcp */
++    char cip[NET_IP_STR_LEN+1] = { 0 };
++    connSockName(c->conn, cip, sizeof(cip)-1, NULL);
++    char peer_ip[NET_IP_STR_LEN+1] = { 0 };
++    connPeerToString(c->conn, peer_ip, sizeof(peer_ip)-1, NULL);
++
++    serverLog(LL_DEBUG, "isDtoeClient, cip:%s, peer_ip:%s\n", cip, peer_ip);
++    return strcmp(cip, peer_ip) && !strcmp(cip, dtoe_ip);
++}
++
+ void clientAcceptHandler(connection *conn) {
+     client *c = connGetPrivateData(conn);
+ 
+@@ -1281,6 +1293,11 @@ void clientAcceptHandler(connection *conn) {
+     moduleFireServerEvent(REDISMODULE_EVENT_CLIENT_CHANGE,
+                           REDISMODULE_SUBEVENT_CLIENT_CHANGE_CONNECTED,
+                           c);
++    if (server.dtoe_ip[0] != '\0' && !islocalClient(c) && isDtoeClient(c, server.dtoe_ip)) {
++        int ret = kbdtoe_conn_start_offload(conn->fd);
++        if (ret == 0 /* DTOE_SUCCESS */) conn->flags |= CONN_FLAG_DTOE;
++        serverLog(LL_VERBOSE, "socket fd :%d start tcp offload, ret:%d", conn->fd, ret);
++    }
+ }
+ 
+ #define MAX_ACCEPTS_PER_CALL 1000
+diff --git a/src/server.c b/src/server.c
+index 9ca360ed4..8b4912bb6 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -62,6 +62,7 @@
+ #include <sys/socket.h>
+ #include <sys/resource.h>
+ 
++
+ #ifdef __linux__
+ #include <sys/mman.h>
+ #endif
+@@ -2509,6 +2510,9 @@ void initServer(void) {
+     adjustOpenFilesLimit();
+     const char *clk_msg = monotonicInit();
+     serverLog(LL_NOTICE, "monotonic clock: %s", clk_msg);
++    if (server.dtoe_ip[0] != '\0') {
++        server.maxclients += server.maxclients;
++    }
+     server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
+     if (server.el == NULL) {
+         serverLog(LL_WARNING,
+@@ -7126,6 +7130,17 @@ int main(int argc, char **argv) {
+         moduleLoadFromQueue();
+         ACLLoadUsersAtStartup();
+         InitServerLast();
++        if (server.dtoe_ip[0] != '\0') {
++            int res = kbdtoe_init(server.dtoe_ip, server.maxclients);
++            if (res != 0) {
++                serverLog(LL_NOTICE, "kbdtoe init failed.");
++                exit(0);
++            }
++            serverLog(LL_NOTICE, "user used dtoe feature and kbdtoe init success.");
++            server.el->flags |= AE_USED_DTOE_FEATURE;
++        } else {
++            serverLog(LL_NOTICE, "user dosen't use dtoe feature.");
++        }
+         aofLoadManifestFromDisk();
+         loadDataFromDisk();
+         aofOpenIfNeededOnServerStart();
+@@ -7170,6 +7185,7 @@ int main(int argc, char **argv) {
+ 
+     aeMain(server.el);
+     aeDeleteEventLoop(server.el);
++    kbdtoe_uninit();
+     return 0;
+ }
+ 
+diff --git a/src/server.h b/src/server.h
+index 82e4db938..d150e5667 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -89,6 +89,7 @@ typedef long long ustime_t; /* microsecond time type. */
+ #include "sha1.h"
+ #include "endianconv.h"
+ #include "crc64.h"
++#include "kbdtoe.h"
+ 
+ /* min/max */
+ #undef min
+@@ -1735,6 +1736,7 @@ struct redisServer {
+     int replication_allowed;        /* Are we allowed to replicate? */
+     /* Logging */
+     char *logfile;                  /* Path of log file */
++    char *dtoe_ip;                  /* dtoe ip for dtoe init */
+     int syslog_enabled;             /* Is syslog enabled? */
+     char *syslog_ident;             /* Syslog ident */
+     int syslog_facility;            /* Syslog facility */
+diff --git a/tests/unit/introspection.tcl b/tests/unit/introspection.tcl
+index 460e7e280..18a458a5e 100644
+--- a/tests/unit/introspection.tcl
++++ b/tests/unit/introspection.tcl
+@@ -286,6 +286,7 @@ start_server {tags {"introspection"}} {
+             logfile
+             dir
+             socket-mark-id
++            dtoe-ip
+         }
+ 
+         if {!$::tls} {
+-- 
+2.53.0.windows.1
+

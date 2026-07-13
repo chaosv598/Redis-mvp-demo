@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2b6cb0"/>
+    </marker>
+    <style>
+      .title { font: 700 24px sans-serif; fill: #1a202c; }
+      .label { font: 600 18px sans-serif; fill: #1a202c; }
+      .text { font: 16px sans-serif; fill: #2d3748; }
+      .box { fill: #f7fafc; stroke: #2d3748; stroke-width: 2; rx: 14; ry: 14; }
+      .core { fill: #ebf8ff; stroke: #2b6cb0; stroke-width: 2; rx: 18; ry: 18; }
+      .stack { fill: #fff5f5; stroke: #c53030; stroke-width: 2; rx: 18; ry: 18; stroke-dasharray: 8 6; }
+      .path { stroke: #2b6cb0; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .bypass { stroke: #c53030; stroke-width: 4; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <text x="40" y="42" class="title">Redis sockmap 原理图</text>
+
+  <rect x="50" y="110" width="180" height="90" class="box"/>
+  <text x="115" y="150" class="label">APP1</text>
+  <text x="87" y="178" class="text">Redis Client / Sender</text>
+
+  <rect x="390" y="92" width="180" height="126" class="core"/>
+  <text x="435" y="132" class="label">sockmap + eBPF</text>
+  <text x="417" y="160" class="text">socket redirect</text>
+  <text x="422" y="188" class="text">zero-copy forwarding</text>
+
+  <rect x="730" y="110" width="180" height="90" class="box"/>
+  <text x="795" y="150" class="label">APP2</text>
+  <text x="752" y="178" class="text">Redis Server / Receiver</text>
+
+  <rect x="250" y="248" width="460" height="70" class="stack"/>
+  <text x="420" y="288" class="label">TCP/IP 协议栈</text>
+  <text x="334" y="312" class="text">传统 loopback 路径，存在额外协议处理与内存开销</text>
+
+  <path d="M230 155 C300 155, 335 155, 390 155" class="path"/>
+  <path d="M570 155 C630 155, 665 155, 730 155" class="path"/>
+
+  <path d="M230 170 C315 250, 645 250, 730 170" class="bypass"/>
+  <text x="342" y="236" class="text">绕过 TCP/IP 协议栈，直接在 socket 层重定向</text>
+</svg>
