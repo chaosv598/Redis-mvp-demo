@@ -8,7 +8,7 @@ upstream_base:
 
 patches:
   - name: 0001-hw-kunpeng-adapt-iouring
-    title: Adapt io_uring for Kunpeng ARM
+    title: Adapt io_uring for Kunpeng ARM (2026 onboard-demo 修订)
     owner: twwang@boostkit
     type: ecological
     status: submitted
