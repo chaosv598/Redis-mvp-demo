@@ -6,8 +6,8 @@
 #   bash tools/lifecycle.sh show <id> [--archived]              查看 metadata
 #                                                              (默认只看 active,--archived 查 retired/)
 #   bash tools/lifecycle.sh set <id> <status>                   改状态
-#   bash tools/lifecycle.sh retire <id> [--force]               退役
-#                                                              (metadata → retired/,
+#   bash tools/lifecycle.sh retire <id>                         退役(一步到位,任何状态可直接 retire,
+#                                                              metadata → retired/,
 #                                                              patch → patches/retired/,
 #                                                              series 删行)
 #   bash tools/lifecycle.sh restore <id>                        把退役 patch 复活
@@ -24,12 +24,15 @@
 #   accepted     上游已合入(等下次 rebase 时退役)
 #   retired      终态(已 mv 到 retired/,不在 active apply 链上)
 #
-# 合法转换:
-#   pending     -> validated | retired
+# 合法转换(set 校验用,retire 是快捷方式,任何状态直接到 retired):
+#   pending     -> validated | submitted | retired
 #   validated   -> submitted | pending | retired
 #   submitted   -> accepted | validated | retired
-#   accepted    -> retired
+#   accepted    -> validated | retired
 #   retired     -> (终态,只能 restore 复活成 validated)
+#
+# 实际工作流鼓励直接用 `retire`(跳过 set accepted / set retired 这些中间态),
+# `accepted` 只用于"我已经知道上游合了,标记一下"的语义场景。
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,10 +41,10 @@ cd "$ROOT"
 VERSION_LIST="versions"
 VALID_STATUSES="pending validated submitted accepted retired"
 LEGAL="
-pending:validated,retired
+pending:validated,submitted,retired
 validated:submitted,pending,retired
 submitted:accepted,validated,retired
-accepted:retired
+accepted:validated,retired
 "
 
 find_meta() {
@@ -282,26 +285,6 @@ cmd_retire() {
     local series="$vdir/series"
     local archive_dir="$vdir/metadata/retired"
 
-    # 检查状态(必须是 retired,valid状态会拒绝)
-    local status=$(awk '/^  status:/{print $2; exit}' "$yp")
-    if [ "$status" != "retired" ] && [ "$force" != "--force" ]; then
-        echo "  ✗ 当前状态 $status != retired"
-        echo "  先跑: bash tools/lifecycle.sh set $id retired"
-        echo "  或: bash tools/lifecycle.sh retire $id --force"
-        exit 1
-    fi
-
-    # 解析可选参数 --force
-    shift
-    local force=""
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --force) force="--force" ;;
-            *)       echo "  ✗ 未知参数: $1"; exit 1 ;;
-        esac
-        shift
-    done
-
     # 准备 archive 目录(metadata 和 patches 都用 retired/ 子目录,保持对称)
     mkdir -p "$archive_dir" "$vdir/patches/retired"
 
@@ -340,7 +323,7 @@ case "${1:-}" in
     set)            [ -z "${2:-}" ] || [ -z "${3:-}" ] && { echo "usage: $0 set <id> <status>"; exit 1; }; cmd_set "$2" "$3" ;;
     link)           [ -z "${2:-}" ] || [ -z "${3:-}" ] && { echo "usage: $0 link <id> <pr-url>"; exit 1; }; cmd_link "$2" "$3" ;;
     mark-rebased)   [ -z "${2:-}" ] || [ -z "${3:-}" ] && { echo "usage: $0 mark-rebased <id> <YYYY-MM-DD>"; exit 1; }; cmd_mark_rebased "$2" "$3" ;;
-    retire)         [ -z "${2:-}" ] && { echo "usage: $0 retire <id> [--force]"; exit 1; }; cmd_retire "$2" "${@:3}" ;;
+    retire)         [ -z "${2:-}" ] && { echo "usage: $0 retire <id>"; exit 1; }; cmd_retire "$2" ;;
     restore)        cmd_restore "$2" ;;
-    *)              echo "usage: $0 {list|show <id> [--archived]|set <id> <status>|link <id> <pr-url>|mark-rebased <id> <date>|retire <id> [--force]|restore <id>}"; exit 1 ;;
+    *)              echo "usage: $0 {list|show <id> [--archived]|set <id> <status>|link <id> <pr-url>|mark-rebased <id> <date>|retire <id>|restore <id>}"; exit 1 ;;
 esac
