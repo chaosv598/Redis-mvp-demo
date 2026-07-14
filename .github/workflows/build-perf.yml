@@ -105,7 +105,7 @@ jobs:
       - name: Build patched redis
         id: build
         run: |
-          bash tools/build-perf.sh build "${{ matrix.version }}"
+          bash -x tools/build-perf.sh build "${{ matrix.version }}" 2>&1 | tail -100
 
       - name: Run memtier_benchmark
         id: bench
