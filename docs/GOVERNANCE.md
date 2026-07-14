@@ -274,17 +274,21 @@ git add -A && git commit -m "chore(rebase): upgrade to 7.0.16"
 git push
 ```
 
-#### C. 退役 patch(默认 archive 到 retired/,可恢复)
+#### C. 退役 patch(archive 到 retired/,可恢复)
+
+**一行搞定**(不需要先 `set accepted` / `set retired`):
 
 ```bash
-bash tools/lifecycle.sh set redis-7.0.15-0001 retired
 bash tools/lifecycle.sh retire redis-7.0.15-0001
-# 实际动作(可恢复,非真删):
+# 实际动作:
 #   metadata/0001-...yaml         → metadata/retired/0001-...yaml
 #   patches/0001-...patch         → patches/retired/0001-...patch
-#   series                        删一行
-#   yaml 里 status 改成 retired
+#   series                        删 0001-...patch 一行
+#   yaml.upstream_plan.status     → retired
+#   然后自动跑 verify
 ```
+
+> 2026-07-14 简化:`retire` 命令不再要求 `status=retired` 前置,任何状态直接 archive。`accepted` 状态现在只是"我已知上游合入"的语义标记,不强制走。
 
 **如果确实要物理删除(不可恢复)**:
 
@@ -321,175 +325,81 @@ git push   # pre-push 钩子自动跑 verify
 
 **触发条件**:metadata.upstream_plan.pr 状态变 merged,或上游 release notes 提到了本仓 patch 的功能。
 
-**完整剧本**:
+**完整剧本**(2026-07-14 简化 — 一行搞定,不再走中间态):
 
 ```bash
-# 1. 标 accepted(语义:上游合入了)
-bash tools/lifecycle.sh set redis-7.0.15-0001 accepted
-
-# 2. 标 rebase 时间(可选项,记录"我们知道的时刻")
-bash tools/lifecycle.sh mark-rebased redis-7.0.15-0001 2026-07-13
-
-# 3. 标 retired(进入待删除状态)
-bash tools/lifecycle.sh set redis-7.0.15-0001 retired
-
-# 4. 退役(archive 到 retired/,非真删)
+# 直接 archive,不需要 set accepted / set retired / mark-rebased 这些前置
 bash tools/lifecycle.sh retire redis-7.0.15-0001
-# 实际动作:
-#   metadata/0001-...yaml  → metadata/retired/0001-...yaml
-#   patches/0001-...patch  → patches/retired/0001-...patch
-#   series                 删 0001-...patch 一行
-#   yaml.status            → retired
-#   然后自动跑 verify
-# 想反悔就:bash tools/lifecycle.sh restore redis-7.0.15-0001
+
+# 想留个痕迹?可选加 CHANGELOG(本仓推荐)
+echo "## $(date +%Y-%m-%d)
+- retire redis-7.0.15-0001(io_uring): merged upstream" >> CHANGELOG.md
+
+# 文档同步(必做)
+grep -rn "io_uring\|0001-hw-kunpeng" README.md docs/ 2>/dev/null
+# 改 README / feature_guide 删引用段
+
+# 提交 push
+git add -A
+git commit -m "chore(retire): archive 0001, merged upstream"
+git push   # pre-push 自动跑 verify
 ```
 
-**文档同步(必做)**:删除 patch 后,可能有其他文档引用了它。**全部更新**!
+**误操作恢复**:
 
 ```bash
-# 找所有引用此 patch 的地方
-grep -rn "io_uring\|0001-hw-kunpeng" README.md README_en.md docs/ .github/ 2>/dev/null
+bash tools/lifecycle.sh restore redis-7.0.15-0001
+# metadata + patches 移回 active,series 加回,status → validated
 ```
 
-常见引用点:
+**真删(过几个 release 确认不会回来后)**:
 
-| 文件 | 该改什么 |
-|---|---|
-| `README.md` / `README_en.md` | 删"特性介绍"段对此 patch 的描述,改"已合入上游" |
-| `docs/zh/redis_network_async_optimization_feature_guide.md` | 同上 |
-| `CHANGELOG.md`(如有) | 加一行 `### Removed` 记录 |
-| `GOVERNANCE.md` § 1 目录结构示例 | 更新 patch 数 |
-| `GOVERNANCE.md` § 0 30 秒速读表 | 更新"patch 总数" |
+```bash
+rm versions/redis-7.0.15/metadata/retired/0001-*.yaml
+rm versions/redis-7.0.15/patches/retired/0001-*.patch
+```
 
-**判断题:patch 真删 vs archive 到 retired/?**
+**判断题:archive vs 真删?**
 
 | 方案 | 何时用 |
 |---|---|
-| **archive 到 retired/(默认)** | 本仓精神是"开发者愿意配合",可恢复、不冒险。`bash tools/lifecycle.sh retire <id>` 一行解决 |
-| 真删(rm) | archive 之后过了几个 release 确认不会回来再手动 rm,或退役的 patch 有 license 风险 |
-| archive + CHANGELOG 留痕 | 兼顾可恢复 + 团队沟通(本仓推荐) |
+| **archive 到 retired/(默认)** | 一行 `retire` 搞定,可恢复不冒险 |
+| 真删 | archive 之后过了 2-3 个 release 确认不会回来,或 patch 有 license 风险 |
+| archive + CHANGELOG | 兼顾可恢复 + 团队沟通(本仓推荐) |
 
-> 注:`bash tools/lifecycle.sh retire <id>` **不真删**,而是 mv 到 `retired/` 子目录。好处:
-> - 想"复活"就 `bash tools/lifecycle.sh restore <id>`
-> - 想真删时手动 `rm retired/*.yaml retired/*.patch` 即可
-> - 配合 git history,任何退役 patch 都可追溯 |
-
-**完整 e2e 示例**(本仓 0001 假设被上游 7.2 合并):
-
-```bash
-# 1. 标 accepted
-bash tools/lifecycle.sh set redis-7.0.15-0001 accepted
-
-# 2. 查引用
-grep -rn "0001\|io_uring" README.md docs/
-
-# 3. 改 README.md 删引用段
-$EDITOR README.md
-
-# 4. 改 docs/...
-$EDITOR docs/zh/redis_network_async_optimization_feature_guide.md
-
-# 5. CHANGELOG.md 留痕
-echo "## 2026-07-13
-- remove redis-7.0.15-0001(io_uring): merged upstream in 7.2" >> CHANGELOG.md
-
-# 6. 退役
-bash tools/lifecycle.sh retire redis-7.0.15-0001
-
-# 7. 跑 verify
-bash tools/verify.sh
-
-# 8. 提交 push
-git add -A
-git commit -m "chore(retire): remove 0001, merged upstream in 7.2"
-git push
-```
+> **2026-07-14 之前的写法**:要先 `set accepted` → `mark-rebased` → `set retired` → `retire`,共 4 条命令。新写法 1 条命令搞定 — 状态机本来就只是 metadata 里一个字段,git history 已经记录了完整时间线,中间态是冗余的。`accepted` 状态现在保留作为"我已知上游合入"的语义标记,**不强制走**。
 
 #### F. 怎么基于本仓构建(消费侧剧本)
 
-**场景**:你(下游用户)拿到本仓的 patch,要 apply 到干净 redis 源码上 make。
+**场景**:你(下游用户)拿到本仓的 patch,要 apply 到干净的 redis 源码上 build。
 
-**方法 1(最快,1 行):用 verify.sh 看 apply 状态**
-
-```bash
-bash tools/verify.sh
-# 输出每个 patch 的 apply 状态,但产物在 /tmp,不可用
-```
-
-**方法 2(标准):逐 patch apply + build 到 redis 源**
+**一行命令**(2026-07-14 新增 `tools/apply-and-build.sh`):
 
 ```bash
-# 假设 redis 源在 /opt/redis-7.0.15
-REDIS_SRC=/opt/redis-7.0.15
-VER=7.0.15
-PATCH_REPO=/path/to/this/Redis-mvp-demo
-
-cd "$REDIS_SRC"
-git checkout $VER  # 或 checkout 目标 commit
-
-# 逐 patch apply,每步 build + test
-i=0
-while read p; do
-    i=$((i+1))
-    [[ "$p" =~ ^# ]] && continue
-    [[ -z "$p" ]] && continue
-
-    echo "=== [$i] $p ==="
-
-    # Step 1: apply
-    if ! git apply --check "$PATCH_REPO/versions/redis-$VER/patches/$p"; then
-        echo "  ✗ apply 失败,停止"
-        exit 1
-    fi
-    git apply "$PATCH_REPO/versions/redis-$VER/patches/$p"
-    echo "  ✓ applied"
-
-    # Step 2: build
-    make distclean >/dev/null 2>&1
-    if ! make -j$(nproc) >/dev/null 2>&1; then
-        echo "  ✗ build 失败,patch 引入编译错误"
-        exit 1
-    fi
-    echo "  ✓ build OK"
-
-    # Step 3: smoke test(可选)
-    if [ -x ./runtest ]; then
-        ./runtest --single unit/type 2>/dev/null && echo "  ✓ unit test OK" || echo "  ⚠ unit test 失败"
-    fi
-done < "$PATCH_REPO/versions/redis-$VER/series"
+bash tools/apply-and-build.sh 7.0.15
+# 严格按 metadata 的 upstream_base.repo + commit 拉精确代码
+# SHA 不可达(匿名 clone / 强制 push 后)→ 自动回退到 upstream_base.version 对应 tag
+# 按 series 顺序逐 patch git apply,失败立即停
+# 然后 make -j$(nproc)
+# 产出留在 /tmp/<random>/redis,不污染本仓
 ```
 
-**方法 3(脚本化):保存到 `tools/apply-and-build.sh` 复用**
+**常用参数**:
 
 ```bash
-cat > /tmp/apply-and-build.sh <<'EOF'
-#!/usr/bin/env bash
-# apply-and-build.sh —— 把本仓的 patch apply 到 redis 源上并 build
-# 用法: bash /tmp/apply-and-build.sh <redis-src-dir> [version]
-set -e
-SRC="${1:?usage: $0 <redis-src-dir> [version]}"
-VER="${2:-7.0.15}"
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# 只 apply 不 build(快速验证 patch 兼容性,~30s)
+bash tools/apply-and-build.sh 7.0.15 --skip-build
 
-cd "$SRC"
-git checkout "$VER" 2>/dev/null || { echo "  ✗ 缺 $VER tag"; exit 1; }
-i=0
-while read p; do
-    i=$((i+1))
-    [[ "$p" =~ ^# ]] && continue
-    [[ -z "$p" ]] && continue
-    echo "[$i] $p"
-    git apply --check "$REPO/versions/redis-$VER/patches/$p" || { echo "  ✗ apply fail"; exit 1; }
-    git apply "$REPO/versions/redis-$VER/patches/$p"
-    make -j$(nproc) >/dev/null 2>&1 || { echo "  ✗ build fail"; exit 1; }
-    echo "  ✓"
-done < "$REPO/versions/redis-$VER/series"
-echo "✓ 全部 $i 个 patch apply + build 成功"
-EOF
-chmod +x /tmp/apply-and-build.sh
+# build 完跑 ./runtest --single unit/type smoke test
+bash tools/apply-and-build.sh 7.0.15 --smoke
+
+# 复用已有 src 目录(免去再 clone,~5s 验证 apply)
+bash tools/apply-and-build.sh 7.0.15 --src-dir /opt/redis --skip-build
 ```
 
-**回滚**:如果中途某 patch 引入问题,`git reset --hard HEAD` 回滚(每个 apply 前可加 `git commit -am "before 0001"`,回滚用 `git reset --hard HEAD~1`)。
+**回滚**:如果中途某 patch 引入问题,build.sh 会立即 `exit 1`,你只需 `rm -rf /tmp/<random>` 清理临时 src 目录。无需 `git reset`,因为 src 是临时目录。
+
+**为什么不写文档里贴一大段 shell**:把脚本放在 `tools/apply-and-build.sh` 仓库内可维护,文档只描述用法和参数 — 比贴 50 行 heredoc 容易跟进。
 
 #### G. 两个 patch 冲突怎么办?
 
