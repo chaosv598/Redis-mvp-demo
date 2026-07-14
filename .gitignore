@@ -35,6 +35,8 @@ build.sh
 # CI 产物(本地),不入仓
 versions/*/reports/*.json
 versions/*/tests/.tmp/
+/artifacts/
+/tmp/build-perf-work/
 .DS_Store
 *.swp
 
