@@ -1,4 +1,5 @@
 version_id: redis-demo-vanilla
+demo: true
 description: |
   Redis 7.2.4 上游基线,无任何 patch overlay。
   目的:作为 build-perf CI 链路的"端到端 demo"——证明 clone → apply →

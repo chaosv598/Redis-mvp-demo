@@ -30,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       redis_7_0_15:      ${{ steps.filter.outputs.redis_7_0_15 }}
+      redis_7_2_4:       ${{ steps.filter.outputs.redis_7_2_4 }}
       redis_6_0_20:      ${{ steps.filter.outputs.redis_6_0_20 }}
       redis_demo_vanilla: ${{ steps.filter.outputs.redis_demo_vanilla }}
       versions: ${{ steps.build-versions.outputs.versions }}
@@ -41,6 +42,8 @@ jobs:
           filters: |
             redis_7_0_15:
               - 'versions/redis-7.0.15/**'
+            redis_7_2_4:
+              - 'versions/redis-7.2.4/**'
             redis_6_0_20:
               - 'versions/redis-6.0.20/**'
             redis_demo_vanilla:
@@ -55,6 +58,7 @@ jobs:
             if [ -z "$list" ]; then list="\"$1\""; else list="$list, \"$1\""; fi
           }
           [ "${{ steps.filter.outputs.redis_7_0_15 }}" = 'true' ]       && append 'redis-7.0.15'
+          [ "${{ steps.filter.outputs.redis_7_2_4 }}" = 'true' ]        && append 'redis-7.2.4'
           [ "${{ steps.filter.outputs.redis_6_0_20 }}" = 'true' ]       && append 'redis-6.0.20'
           [ "${{ steps.filter.outputs.redis_demo_vanilla }}" = 'true' ] && append 'redis-demo-vanilla'
           if [ -z "$list" ]; then versions='[]'; else versions="[$list]"; fi

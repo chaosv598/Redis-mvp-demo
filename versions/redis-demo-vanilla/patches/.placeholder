@@ -1,0 +1,3 @@
+# Empty dir marker — git doesn't track empty dirs.
+# redis-demo-vanilla/ is demo-only (no patch overlay),
+# see version.yaml top-level demo: true flag.

@@ -1,0 +1,30 @@
+version_id: redis-7.2.4
+description: |
+  Redis 7.2.4 + boostkit demo port of patch 0004 (RDB->AOF fallback).
+
+  Purpose: a clean end-to-end CI demonstration of the build-perf
+  pipeline against an up-to-date Redis (7.2.x GA line), exercising
+  one realistic patch overlay that compiles on stock ubuntu-22.04
+  without external libraries. The patch content is structurally
+  identical to boostkit patch 0004 on 7.0.15 but adapted to 7.2.4's
+  rdb_load_ret return code machinery.
+owner: chaosv598@boostkit
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 7.2.4
+  commit: d2c8a4b91e8c0e6aefd1f5bc0bf582cddbe046b7
+
+patches:
+  - name: 0004-perf-rdb-fallback-aof-7.2.4-port
+    title: AOF fallback when RDB load fails at startup (7.2.4 port)
+    owner: boostkit-demo
+    type: ecological
+    status: submitted
+    note: |
+      Demo port of boostkit patch id 0004 (originally against
+      redis-7.0.15). Adapted to 7.2.4's unified rdb_load_ret failure
+      branch (the old errno != ENOENT path was replaced in 7.2 by
+      rdb_load_ret != RDB_NOT_EXIST). Compiles cleanly on stock
+      ubuntu without external dependencies — used to demonstrate
+      the build-perf pipeline end-to-end in a real PR flow.
+    dependence: []

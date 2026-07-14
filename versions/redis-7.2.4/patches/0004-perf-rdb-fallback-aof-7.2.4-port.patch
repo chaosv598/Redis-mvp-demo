@@ -1,0 +1,52 @@
+From e72f3ebaad859ea7fbda41dda6e56bbddfa6eda4 Mon Sep 17 00:00:00 2001
+From: boostkit-demo <demo@boostkit.local>
+Date: Tue, 14 Jul 2026 20:38:37 +0800
+Subject: [PATCH] redis-7.2.4-rdb-aof-fallback (demo port)
+
+Port of boostkit patch id 0004 (RDB->AOF fallback) from redis-7.0.15
+to redis-7.2.4 for end-to-end CI demo purposes.
+
+- 7.2.4 unified the failure branch on rdb_load_ret != RDB_NOT_EXIST
+- use plain return; (no goto), since loadAppendOnlyFiles already
+  populated the dataset
+
+This is a demo-only port for the build-perf end-to-end pipeline PR.
+Not submitted upstream.
+---
+ src/server.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/src/server.c b/src/server.c
+index 438325f..ae3dd12 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -6816,6 +6816,26 @@ void loadDataFromDisk(void) {
+             }
+         } else if (rdb_load_ret != RDB_NOT_EXIST) {
+             serverLog(LL_WARNING, "Fatal error loading the DB, check server logs. Exiting.");
++            /* boostkit demo patch 0004 (7.2.4 port): try AOF fallback before fatal
++             * exit, so a corrupted RDB file does not force a full restart loop when
++             * an AOF replay is available. Mark AOF_ON on success so subsequent
++             * saves use the AOF path. On AOF_FAILED / AOF_OPEN_ERR fall through
++             * to the original exit(1). */
++            if (server.aof_filename[0] != '\0') {
++                serverLog(LL_NOTICE,
++                          "Boostkit demo 0004: attempting AOF fallback after RDB failure (aof=%s)",
++                          server.aof_filename);
++                int aof_ret = loadAppendOnlyFiles(server.aof_manifest);
++                if (aof_ret == AOF_OK || aof_ret == AOF_TRUNCATED) {
++                    serverLog(LL_NOTICE,
++                              "Boostkit demo 0004: AOF fallback succeeded, continuing startup");
++                    server.aof_state = AOF_ON;
++                    return;
++                }
++                serverLog(LL_WARNING,
++                          "Boostkit demo 0004: AOF fallback also failed (ret=%d), falling through to exit",
++                          aof_ret);
++            }
+             exit(1);
+         }
+ 
+-- 
+2.43.0
+
