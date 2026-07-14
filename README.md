@@ -21,16 +21,28 @@ Kunpeng BoostKit Redis
 .
 ├── README.md
 ├── LICENSE.txt
-├── redis-6.0.20-adapt-iouring.patch
-├── redis-7.0.15-adapt-iouring.patch
-├── redis-7.0.15-adapt-dtoe.patch
+├── versions/
+│   ├── redis-6.0.20/
+│   │   ├── version.yaml          # 元数据:版本字段 + patches[]
+│   │   └── patches/
+│   │       └── 0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch
+│   └── redis-7.0.15/
+│       ├── version.yaml
+│       └── patches/
+│           ├── 0001-hw-kunpeng-adapt-iouring.patch
+│           ├── 0002-perf-kunpeng-adapt-dtoe.patch
+│           ├── 0003-perf-jemalloc-arm64-pointer-tag-and-gc.patch
+│           └── 0004-perf-rdb-fallback-aof.patch
+├── tools/
+│   └── verify.sh                 # 一键校验(本地 + CI 跑)
+├── .github/workflows/ci.yml      # GitHub Actions:1 个 verify job
 └── docs
     ├── LICENSE
-    ├── zh
-    │   ├── redis_network_async_optimization_feature_guide.md
-    │   ├── redis_network_async_optimization_release_notes.md
-    │   ├── redis_sockmap_optimization_feature_guide.md
-    │   └── redis_sockmap_optimization_release_notes.md
+    ├── GOVERNANCE.md             # 仓治理说明
+    ├── patch-lifecycle.md        # 3 状态机说明
+    ├── ci-github-actions.md      # CI 配置说明
+    ├── zh                        # 上游产品文档(未动)
+    └── en                        # 上游产品文档(未动)
 ```
 
 ## 特性介绍
@@ -38,13 +50,15 @@ Kunpeng BoostKit Redis
 ### Redis 6.0.20 网络异步优化
 
 - 特性指南：`docs/zh/redis_network_async_optimization_feature_guide.md`
-- 适配补丁：`redis-6.0.20-adapt-iouring.patch`
+- 适配补丁：`versions/redis-6.0.20/patches/0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch`
+- 元数据：`versions/redis-6.0.20/version.yaml`
 
 ### Redis 7.0.15 网络异步优化
 
 - 特性指南：`docs/zh/redis_network_async_optimization_feature_guide.md`
-- 适配补丁：`redis-7.0.15-adapt-iouring.patch`
-- 附加补丁：`redis-7.0.15-adapt-dtoe.patch`
+- 适配补丁：`versions/redis-7.0.15/patches/0001-hw-kunpeng-adapt-iouring.patch`
+- 附加补丁：`versions/redis-7.0.15/patches/0002-perf-kunpeng-adapt-dtoe.patch`
+- 元数据：`versions/redis-7.0.15/version.yaml`
 
 ### Redis sockmap优化
 
@@ -70,8 +84,8 @@ cp ./include/kraio.h /usr/include
 
 # 2) 合入补丁并编译 Redis
 cd /path/to/redis-7.0.15
-cp /path/to/Redis/redis-7.0.15-adapt-iouring.patch .
-patch -p1 < redis-7.0.15-adapt-iouring.patch
+cp /path/to/Redis/versions/redis-7.0.15/patches/0001-hw-kunpeng-adapt-iouring.patch .
+patch -p1 < 0001-hw-kunpeng-adapt-iouring.patch
 make distclean
 make -j
 ```

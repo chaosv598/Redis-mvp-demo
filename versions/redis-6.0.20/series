@@ -1,4 +1,0 @@
-# versions: 6.0.20 (cross-upgrade from 6.0.15)
-# upstream SHA: c5f61c4 (will be filled)
-# 命名规范:<序号>-<type>-<mod>-<desc>.patch
-0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch

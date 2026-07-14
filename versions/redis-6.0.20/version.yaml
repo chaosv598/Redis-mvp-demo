@@ -1,0 +1,16 @@
+version_id: redis-6.0.20
+description: Redis 6.0.20 patch overlay (BoostKit, cross-upgrade from 6.0.15)
+owner: chaosv598@boostkit
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 6.0.20
+  commit: c5f61c4e22acaff35a7916056c2b3a82e62a5f1d
+
+patches:
+  - name: 0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20
+    title: Adapt io_uring for Kunpeng ARM across 6.0.15 to 6.0.20
+    owner: huyizhen@boostkit
+    type: ecological
+    status: pending
+    note: Will submit upstream after native io_uring support lands in 7.0
+    dependence: []
