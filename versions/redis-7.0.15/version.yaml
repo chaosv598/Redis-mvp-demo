@@ -1,0 +1,40 @@
+version_id: redis-7.0.15
+description: Redis 7.0.15 patch overlay (BoostKit)
+owner: chaosv598@boostkit
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 7.0.15
+  commit: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
+
+patches:
+  - name: 0001-hw-kunpeng-adapt-iouring
+    title: Adapt io_uring for Kunpeng ARM
+    owner: twwang@boostkit
+    type: ecological
+    status: submitted
+    pr: https://github.com/redis/redis/pull/TBD
+    note: Submitted upstream, awaiting review
+    dependence: []
+  - name: 0002-perf-kunpeng-adapt-dtoe
+    title: Enable dtoe (DMA-to-engine) network optimization on Kunpeng
+    owner: twwang@boostkit
+    type: project
+    status: accepted
+    note: Kunpeng-specific HW feature, will keep downstream-only
+    dependence: []
+  - name: 0003-perf-jemalloc-arm64-pointer-tag-and-gc
+    title: Adapt jemalloc 5.2.1 ARM64 pointer-tag and GC strategy optimize
+    owner: yinbin@boostkit
+    type: ecological
+    status: submitted
+    pr: https://github.com/redis/jemalloc/pull/TBD
+    note: Submitted to jemalloc upstream, will be removed when equivalent lands
+    dependence: []
+  - name: 0004-perf-rdb-fallback-aof
+    title: AOF fallback when RDB load fails at startup
+    owner: dev@boostkit
+    type: ecological
+    status: submitted
+    pr: https://github.com/redis/redis/pull/TBD
+    note: Submitted upstream as a defensive proposal, fallback uses existing loadAppendOnlyFiles
+    dependence: []
