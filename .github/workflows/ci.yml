@@ -27,3 +27,18 @@ jobs:
         run: pip install pyyaml --quiet
       - name: Run verify
         run: bash tools/verify.sh
+      - name: Install Redis build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config tcl
+      - name: Run patched Redis E2E
+        env:
+          E2E_RESULTS_DIR: ${{ runner.temp }}/redis-e2e-results
+        run: bash tools/verify.sh --e2e redis-7.0.15
+      - name: Upload Redis E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-e2e-results
+          path: ${{ runner.temp }}/redis-e2e-results
+          if-no-files-found: warn
