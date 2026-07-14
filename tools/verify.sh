@@ -15,6 +15,25 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+usage() {
+    cat <<'EOF'
+Usage:
+  bash tools/verify.sh
+  bash tools/verify.sh --e2e redis-7.0.15
+EOF
+}
+
+if [ "${1:-}" = "--help" ]; then
+    usage
+    exit 0
+fi
+
+if [ "$#" -gt 0 ] && { [ "$#" -ne 2 ] || [ "$1" != "--e2e" ] || [ "$2" != "redis-7.0.15" ]; }; then
+    echo "unsupported arguments: $*" >&2
+    usage >&2
+    exit 2
+fi
+
 errs=0
 
 echo "=== boostkit verify ==="
