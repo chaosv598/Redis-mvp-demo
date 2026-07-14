@@ -34,6 +34,165 @@ if [ "$#" -gt 0 ] && { [ "$#" -ne 2 ] || [ "$1" != "--e2e" ] || [ "$2" != "redis
     exit 2
 fi
 
+E2E_WORK=""
+E2E_PID=0
+
+cleanup_e2e() {
+    if [ "$E2E_PID" -gt 0 ] && kill -0 "$E2E_PID" 2>/dev/null; then
+        kill "$E2E_PID"
+        wait "$E2E_PID" 2>/dev/null || true
+    fi
+    [ -z "$E2E_WORK" ] || rm -rf "$E2E_WORK"
+}
+
+read_e2e_metadata() {
+    python3 - "$ROOT/versions/$1/version.yaml" <<'PYEOF'
+import re
+import sys
+
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    data = yaml.safe_load(stream)
+upstream = data["upstream_base"]
+repo = upstream["repo"]
+commit = upstream["commit"]
+if not re.fullmatch(r"[0-9a-f]{40}", commit):
+    raise SystemExit(f"invalid upstream commit: {commit}")
+print(repo)
+print(commit)
+PYEOF
+}
+
+wait_for_redis() {
+    local cli="$1"
+    local port="$2"
+    local attempt
+
+    for attempt in $(seq 1 30); do
+        if "$cli" -h 127.0.0.1 -p "$port" PING 2>/dev/null | grep -qx PONG; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+run_e2e() {
+    local version="$1"
+    local patch="$ROOT/tests/fixtures/$version/0001-ci-version-marker.patch"
+    local results source repo sha actual_sha port ping_rps
+    local -a metadata
+
+    mapfile -t metadata < <(read_e2e_metadata "$version")
+    repo="${metadata[0]}"
+    sha="${metadata[1]}"
+    echo "E2E metadata: $version repo=$repo commit=$sha"
+    [ "${VERIFY_E2E_DRY_RUN:-0}" = "1" ] && return 0
+
+    [ -f "$patch" ] || {
+        echo "E2E patch fixture not found: $patch" >&2
+        return 1
+    }
+
+    E2E_WORK=$(mktemp -d)
+    results=${E2E_RESULTS_DIR:-"$E2E_WORK/results"}
+    source="$E2E_WORK/redis"
+    port=${REDIS_E2E_PORT:-16379}
+    mkdir -p "$results"
+    trap cleanup_e2e EXIT INT TERM
+
+    echo "--- E2E: fetch exact upstream commit ---"
+    git init -q "$source"
+    git -C "$source" remote add origin "$repo"
+    git -C "$source" fetch --quiet --depth 1 origin "$sha"
+    git -C "$source" checkout --quiet --detach FETCH_HEAD
+    actual_sha=$(git -C "$source" rev-parse HEAD)
+    if [ "$actual_sha" != "$sha" ]; then
+        echo "E2E commit mismatch: expected $sha, got $actual_sha" >&2
+        return 1
+    fi
+
+    echo "--- E2E: apply portable CI patch ---"
+    git -C "$source" apply --check "$patch"
+    git -C "$source" apply "$patch"
+
+    echo "--- E2E: build patched Redis ---"
+    make -C "$source" -j"${MAKE_JOBS:-2}"
+    "$source/src/redis-server" --version | tee "$results/version.txt"
+    grep -Fq 'v=7.0.15-ci-patched' "$results/version.txt"
+
+    if "$source/src/redis-cli" -h 127.0.0.1 -p "$port" PING 2>/dev/null | grep -qx PONG; then
+        echo "E2E port already has a Redis instance: $port" >&2
+        return 1
+    fi
+
+    echo "--- E2E: start Redis and run functional checks ---"
+    "$source/src/redis-server" \
+        --port "$port" \
+        --bind 127.0.0.1 \
+        --save "" \
+        --appendonly no \
+        --protected-mode yes \
+        --logfile "$results/redis.log" &
+    E2E_PID=$!
+    if ! wait_for_redis "$source/src/redis-cli" "$port"; then
+        echo "E2E Redis failed to become ready" >&2
+        cat "$results/redis.log" >&2
+        return 1
+    fi
+
+    [ "$("$source/src/redis-cli" -h 127.0.0.1 -p "$port" SET ci:key value)" = "OK" ]
+    [ "$("$source/src/redis-cli" -h 127.0.0.1 -p "$port" GET ci:key)" = "value" ]
+    "$source/src/redis-cli" -h 127.0.0.1 -p "$port" DEL ci:counter >/dev/null
+    "$source/src/redis-cli" -h 127.0.0.1 -p "$port" INCR ci:counter >/dev/null
+    [ "$("$source/src/redis-cli" -h 127.0.0.1 -p "$port" INCR ci:counter)" = "2" ]
+
+    echo "--- E2E: run redis-benchmark smoke test ---"
+    LC_ALL=C "$source/src/redis-benchmark" \
+        -h 127.0.0.1 \
+        -p "$port" \
+        --csv \
+        -t ping_inline,set,get \
+        -n 20000 \
+        -c 20 >"$results/benchmark.csv"
+    ping_rps=$(awk -F, '$1 ~ /PING_INLINE/ {gsub(/"/, "", $2); print $2; exit}' "$results/benchmark.csv")
+    if [ -z "$ping_rps" ]; then
+        echo "E2E could not parse PING_INLINE throughput" >&2
+        cat "$results/benchmark.csv" >&2
+        return 1
+    fi
+    if ! awk -v actual="$ping_rps" 'BEGIN { exit !(actual >= 10000) }'; then
+        echo "E2E PING_INLINE throughput below 10000 requests/s: $ping_rps" >&2
+        return 1
+    fi
+
+    {
+        echo "# Redis E2E CI"
+        echo
+        echo "- Version: \`$version\`"
+        echo "- Commit: \`$sha\`"
+        echo "- Patch marker: \`7.0.15-ci-patched\`"
+        echo "- Functional tests: PASS"
+        echo "- PING_INLINE: $ping_rps requests/s (minimum: 10000)"
+        echo
+        echo "## Raw benchmark"
+        echo
+        printf '%s\n' '```csv'
+        cat "$results/benchmark.csv"
+        printf '%s\n' '```'
+    } >"$results/summary.md"
+    cat "$results/summary.md"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        cat "$results/summary.md" >>"$GITHUB_STEP_SUMMARY"
+    fi
+}
+
+if [ "${1:-}" = "--e2e" ]; then
+    run_e2e "$2"
+    exit $?
+fi
+
 errs=0
 
 echo "=== boostkit verify ==="

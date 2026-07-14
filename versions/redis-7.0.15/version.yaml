@@ -4,7 +4,7 @@ owner: chaosv598@boostkit
 upstream_base:
   repo: https://github.com/redis/redis
   version: 7.0.15
-  commit: 8f9ea51a8cf42ac80c0e50141462ca2c03d8aa1d
+  commit: f35f36a265403c07b119830aa4bb3b7d71653ec9
 
 patches:
   - name: 0001-hw-kunpeng-adapt-iouring

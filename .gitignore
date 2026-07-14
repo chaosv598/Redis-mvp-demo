@@ -33,6 +33,7 @@ build.sh
 *.a
 
 # CI 产物(本地),不入仓
+/e2e-results/
 versions/*/reports/*.json
 versions/*/tests/.tmp/
 .DS_Store

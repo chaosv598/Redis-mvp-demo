@@ -1,0 +1,7 @@
+diff --git a/src/version.h b/src/version.h
+--- a/src/version.h
++++ b/src/version.h
+@@ -1,2 +1,2 @@
+-#define REDIS_VERSION "7.0.15"
++#define REDIS_VERSION "7.0.15-ci-patched"
+ #define REDIS_VERSION_NUM 0x0007000f
