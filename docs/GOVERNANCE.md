@@ -57,8 +57,6 @@ Redis-mvp-demo/
     └── zh/、en/                   #    上游产品文档(未动)
 ```
 
-**对比治理前**:
-- ❌ 之前: `boostkit.yaml` + 14 个工具 + `OWNERS` + `.gitee-ci.yml` + 7 状态机 + 13 字段 metadata
 - ✅ 现在: **没有 boostkit.yaml**、**没有 OWNERS 文件校验**、**没有 .gitee-ci.yml 模板**,只保留 4 个 bash 脚本
 
 ---
@@ -95,7 +93,7 @@ upstream_plan:                      # 后续合入upstream计划
 | `upstream_plan.pr` | ⬜ | 已发上游 PR 时的链接 |
 | `upstream_plan.note` | ⬜ | 自由文本说明 |
 
-**4 状态机** (从原 7 状态机砍):
+**4 状态机** 
 
 ```
 pending  →  validated  →  submitted  →  accepted  →  retired
