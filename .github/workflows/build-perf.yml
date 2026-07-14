@@ -1,0 +1,138 @@
+# Patch overlay build + perf benchmark
+#
+# 触发: PR 修改了 versions/<v>/patches/ 或 version.yaml
+# 不触发: 纯 docs/ 修改(节省 ~2min CI)
+#
+# 与 verify workflow 的关系:
+#   - ci.yml(verify): dry-run,只 apply 不编不跑,~30s
+#   - build-perf.yml(本文件): 真的编 + 跑 memtier_benchmark,~2-3min
+#
+# 失败策略: build 失败 = fail(说明 patch 让 upstream 编不过)
+#           bench 数据异常 = warn 不 fail(report 给 reviewer)
+#
+# 注意: paths-filter 输出 key 不能含点号(.是 GHA 表达式属性访问符)
+#      所以 filter key 用 redis_7_0_15 / redis_6_0_20
+
+name: build-perf
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: build-perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: detect changed versions
+    runs-on: ubuntu-latest
+    outputs:
+      redis_7_0_15: ${{ steps.filter.outputs.redis_7_0_15 }}
+      redis_6_0_20: ${{ steps.filter.outputs.redis_6_0_20 }}
+      versions: ${{ steps.build-versions.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            redis_7_0_15:
+              - 'versions/redis-7.0.15/**'
+            redis_6_0_20:
+              - 'versions/redis-6.0.20/**'
+      - id: build-versions
+        name: build matrix list
+        run: |
+          versions='[]'
+          [ "${{ steps.filter.outputs.redis_7_0_15 }}" = 'true' ] && versions='["redis-7.0.15"]'
+          if [ "${{ steps.filter.outputs.redis_6_0_20 }}" = 'true' ]; then
+            if [ "$versions" = '[]' ]; then
+              versions='["redis-6.0.20"]'
+            else
+              versions='["redis-7.0.15","redis-6.0.20"]'
+            fi
+          fi
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "matrix will be: $versions"
+
+  build-perf:
+    name: build + bench (${{ matrix.version }})
+    needs: changes
+    if: needs.changes.outputs.versions != '[]' && needs.changes.outputs.versions != ''
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.changes.outputs.versions) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps + memtier from source
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          # 系统依赖参考 BoostKit redis_network_async_optimization_feature_guide.md
+          # (openEuler yum 命令翻译成 ubuntu apt)
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool pkg-config \
+            tcl tcl-dev libssl-dev libevent-dev \
+            libatomic1 texinfo \
+            liburing-dev libconfig++-dev
+          # memtier 源码编译(ubuntu 22.04 libssl 1.1 兼容)
+          cd /tmp
+          git clone --depth 1 --branch 2.1.0 \
+            https://github.com/RedisLabs/memtier_benchmark.git
+          cd memtier_benchmark
+          autoreconf -i
+          ./configure
+          make -j"$(nproc)"
+          sudo make install
+          which memtier_benchmark
+          memtier_benchmark --version
+
+      - name: Cache upstream clone
+        uses: actions/cache@v4
+        with:
+          path: /tmp/build-perf-work/${{ matrix.version }}/src
+          key: upstream-${{ matrix.version }}-${{ github.sha }}-${{ hashFiles('versions/${{ matrix.version }}/version.yaml') }}
+          restore-keys: |
+            upstream-${{ matrix.version }}-
+
+      - name: Build patched redis
+        id: build
+        run: |
+          bash -x tools/build-perf.sh build "${{ matrix.version }}" 2>&1 | tail -100
+
+      - name: Run memtier_benchmark
+        id: bench
+        run: |
+          bash tools/build-perf.sh bench "${{ matrix.version }}"
+
+      - name: Upload memtier raw log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memtier-${{ matrix.version }}
+          path: artifacts/${{ matrix.version }}/memtier.log
+          retention-days: 30
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-${{ matrix.version }}
+          path: artifacts/${{ matrix.version }}/summary.md
+          retention-days: 30
+
+      - name: Post report to job summary
+        if: always()
+        run: |
+          if [ -f "artifacts/${{ matrix.version }}/summary.md" ]; then
+            cat "artifacts/${{ matrix.version }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ⚠️ build-perf skipped (no summary)" >> "$GITHUB_STEP_SUMMARY"
+          fi
