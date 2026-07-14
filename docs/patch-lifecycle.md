@@ -197,26 +197,6 @@ git add -A && git commit -m "fix: ..."
 git push
 ```
 
-### 场景 D:上游发新版本(7.0.15 → 7.0.16)
-
-```bash
-# 1. 复制目录结构
-mkdir -p versions/redis-7.0.16/patches
-cp versions/redis-7.0.15/version.yaml versions/redis-7.0.16/version.yaml
-cp versions/redis-7.0.15/patches/*.patch versions/redis-7.0.16/patches/
-
-# 2. 更新 version.yaml:version_id / description / upstream_base.version+commit
-#    视情况调整 patches[] 的 status(发版时通常全部重置为 pending)
-$EDITOR versions/redis-7.0.16/version.yaml
-
-# 3. 跑 verify 确认 100% apply 通过
-bash tools/verify.sh
-
-# 4. push
-git add -A && git commit -m "chore(rebase): upgrade to 7.0.16"
-git push
-```
-
 ---
 
 ## 5. 历次治理精简记录
