@@ -10,6 +10,7 @@
 
 - PR 和 `master` push 均运行完整端到端验证。
 - 从 `versions/redis-7.0.15/version.yaml` 读取上游仓库和固定 commit SHA。
+- 将主干中无法从 Redis 官方仓库解析的 7.0.15 SHA 修正为官方 lightweight tag `7.0.15` 指向的 commit `f35f36a265403c07b119830aa4bb3b7d71653ec9`。
 - 精确下载该 commit，不允许静默回退到 tag 或其他提交。
 - 应用一个仅用于 CI 的可移植演示补丁，并在运行时证明补丁已进入二进制。
 - 编译 Redis，启动隔离实例，运行基础功能测试。
@@ -103,6 +104,7 @@
 ## 安全与可复现性
 
 - 上游来源和 commit 来自仓库受评审的 `version.yaml`。
+- 元数据修正必须以 `git ls-remote https://github.com/redis/redis.git refs/tags/7.0.15` 的结果为依据。
 - 必须校验完整 SHA，不执行下载内容提供的任意安装脚本。
 - 不使用 token、Secrets 或私有依赖。
 - GitHub Actions 第三方 action 固定到明确的主版本；仅使用官方 checkout/upload-artifact action。
