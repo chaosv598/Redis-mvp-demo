@@ -16,11 +16,11 @@
 | 工具数 | **1 个**(`verify.sh`) |
 | 元数据 | **一版本一 yaml**(`version.yaml`),patches 用数组 |
 | CI job | **1 个** |
-| 验证耗时 | ~5 秒(本地) / ~30 秒(CI) |
+| 验证耗时 | 快速校验约 5 秒 / CI 完整 E2E 约 3-5 分钟 |
 | lifecycle 工具 | **无**(状态写在 metadata 里,git history 即时间线) |
 | 退役/归档机制 | **无**(patch 永久保留,不日落) |
 | rebase 工具 | **无**(上游发新版由人工拷贝旧版本目录) |
-| 构建脚本 | **不文档化**(业务方按需自取) |
+| 构建验证 | 同一工具的 `--e2e redis-7.0.15` 模式 |
 
 **简化历程**:
 - 治理前:14 工具 + 7 状态机 + 13 字段 + 7 CI job,**对开发者重**
@@ -45,6 +45,11 @@ Redis-mvp-demo/
 │
 ├── tools/
 │   └── verify.sh                 # ★ 一键验证(本地 + CI 跑)
+│
+├── tests/
+│   ├── fixtures/                 #    仅用于 CI 的可移植演示补丁
+│   ├── test-verify-cli.sh        #    CLI 契约
+│   └── test-ci-contract.sh       #    工作流和文档契约
 │
 ├── .github/
 │   ├── workflows/ci.yml           # ★ 1 个 CI job:verify
@@ -161,6 +166,20 @@ bash tools/verify.sh
 
 单 patch apply 失败**只警告不阻塞**(网络/版本漂移,owner 自己判断)。
 
+### 3.1 端到端构建模式
+
+```bash
+bash tools/verify.sh --e2e redis-7.0.15
+```
+
+E2E 模式从 `version.yaml` 读取 Redis 官方仓库和固定 commit，禁止回退 tag；随后应用
+`tests/fixtures/` 下的可移植版本标记补丁，完成编译、启动、PING/SET/GET/INCR 功能验证和
+`redis-benchmark` smoke test。PING_INLINE 必须达到 10,000 requests/s，结果写入 Job Summary
+并保存为 `redis-e2e-results` artifact。
+
+该模式只证明通用源码消费链路。GitHub-hosted runner 不验证 KRAIO/DTOE；真实鲲鹏验证仍需
+ARM64/openEuler 自托管 runner、专用内核和对应库。
+
 ---
 
 ## 4. CI 流程
@@ -174,9 +193,12 @@ verify:
     - checkout
     - pip install pyyaml
     - bash tools/verify.sh
+    - install Redis build dependencies
+    - bash tools/verify.sh --e2e redis-7.0.15
+    - upload redis-e2e-results (always)
 ```
 
-**总耗时 ~30 秒**(含 clone upstream)。
+**总耗时约 3-5 分钟**，主要花在 Redis 依赖和源码编译。
 
 ### 4.2 PR 端到端流程
 
@@ -185,7 +207,7 @@ verify:
    ↓
 git push origin feature/<branch>
    ↓
-[CI] GitHub Actions verify job → bash tools/verify.sh
+[CI] GitHub Actions verify job → 快速 verify + patched Redis E2E
    ↓ 绿
 开 PR 到 master
    ↓

@@ -7,6 +7,7 @@
 ## 验证
 
 - [ ] `bash tools/verify.sh` 通过(本地)
+- [ ] patched Redis E2E：`bash tools/verify.sh --e2e redis-7.0.15` 通过，或说明为何仅由 CI 执行
 - [ ] 修改了 `versions/<v>/version.yaml` 的 `patches[]` 数组(新增/修改条目)
 - [ ] patch 字段填齐(name / title / owner / type / status / note / dependence)
 

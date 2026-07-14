@@ -50,6 +50,17 @@ bash tools/verify.sh
 - `patches[] 与 patches/ 不一致` → yaml 数组和实际文件对不上
 - `type=... 不是 ecological/project` → 看 §5 元数据字段说明
 
+### 1.3 可选：本地跑完整源码消费 E2E
+
+```bash
+bash tools/verify.sh --e2e redis-7.0.15
+```
+
+该命令会下载 `version.yaml` 指定的 Redis commit、应用 CI 演示补丁、编译并启动 Redis，
+运行 PING/SET/GET/INCR 和 `redis-benchmark`。PING_INLINE 健康门槛是 10,000 requests/s。
+演示补丁只用于验证 patched build 链路，不属于产品 `patches[]`。真实 KRAIO/DTOE 性能验证
+需要 ARM64/openEuler 自托管环境。
+
 ---
 
 ## 2. 走一遍全流程(改一个 patch 标题)
@@ -149,7 +160,7 @@ EOF
 ✓ verify (patch overlay 一键校验) — Running... → Success
 ```
 
-**~30 秒**完成。看到绿色 ✅ 就说明 CI 过了。
+**约 3-5 分钟**完成。CI 会先跑快速 verify，再跑 patched Redis E2E；看到绿色 ✅ 就说明两阶段都通过。
 
 ### 2.8 review & merge
 
@@ -321,6 +332,7 @@ commit + push + PR,merge 后状态自动落 master。
 ```bash
 # 唯一本地工具
 bash tools/verify.sh        # 4 步验证(仓根 / 字段 / 一致性 / apply)
+bash tools/verify.sh --e2e redis-7.0.15  # 下载 / 补丁 / 编译 / 启动 / 功能 / benchmark
 
 # CI 工具
 # GitHub Actions 1 个 job:verify

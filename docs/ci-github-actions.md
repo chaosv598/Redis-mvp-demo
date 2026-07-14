@@ -1,47 +1,69 @@
 # CI —— GitHub Actions 版
 
-> 最后更新 2026-07-14(simplify-v3 后 1 工具 + 1 job 落地版)
-> 对应工作流:`.github/workflows/ci.yml`
-> 配套工具:`bash tools/verify.sh`
+> 最后更新：2026-07-14
+> 工作流：`.github/workflows/ci.yml`
+> 唯一工具：`tools/verify.sh`
 
----
+## 1. 目标
 
-## 0. 30 秒速读
+GitHub Actions 在 PR 和 `master` push 上验证两类能力：
 
-- **1 个 job**:`verify`(ubuntu-latest)
-- **4 步检查**:仓根禁放 → version.yaml 字段合法 → patches[] 与 patches/ 一致 → 干净 upstream apply
-- **3 个触发器**:push master / pull_request / workflow_dispatch
-- **典型时长**:本地 ~5s,CI ~30s
-- **完全免费**:Public 仓库无分钟限制
+1. patch overlay 的结构、元数据、一致性和上游 apply 健康度。
+2. 从 Redis 官方仓库下载固定 commit，应用可移植演示补丁，完成编译、启动、功能测试和
+   `redis-benchmark` 性能 smoke test。
 
----
+仓库仍保持 **1 个工具 + 1 个 CI job**。E2E 是 `verify.sh` 的另一种模式，不增加生命周期
+或构建工具。
 
-## 1. 触发条件
+## 2. 触发器与并发
 
 | 事件 | 行为 |
 |---|---|
-| `push` to `master` | 跑 1 个 verify job |
-| `pull_request` to `master` | 同上 |
-| `workflow_dispatch` | 手动触发,菜单里 Run workflow |
+| `pull_request` to `master` | 运行完整 verify job，失败时阻塞 PR |
+| `push` to `master` | 合并后重新运行完整 verify job |
+| `workflow_dispatch` | 手动运行 |
 
-**并发控制**:`concurrency.cancel-in-progress = true`,**同 PR 后续 push 会取消旧 run**,节省 CI 分钟数。
+`concurrency.cancel-in-progress: true` 会取消同一分支或 PR 的旧 run。
 
----
+## 3. 单 job 两阶段
 
-## 2. Job 矩阵
+### 3.1 快速 patch overlay 校验
 
-| Job | 跑的命令 | blocking | 备注 |
-|---|---|---|---|
-| `verify` | `bash tools/verify.sh` | ✅ 必跑 | 1 步覆盖仓根禁放 + version.yaml 字段 + patches 一致 + upstream apply |
+```bash
+bash tools/verify.sh
+```
 
-> simplify-v3 之前是 1 个 job,simplify-v3 后依然是 1 个 job(只是 verify.sh 内部检查项从 3 项变为 4 项,加入了元数据 enum 校验)。
+检查：
 
----
+- 仓根禁放文件。
+- `version.yaml` 必填字段和枚举。
+- `patches[]` 与 `patches/` 文件一致。
+- 按数组顺序尝试应用产品补丁。
 
-## 3. 工作流文件
+为兼容当前主干治理，产品补丁 apply 失败仍输出 warning，不在这一阶段 hard fail。
+
+### 3.2 patched Redis E2E
+
+```bash
+bash tools/verify.sh --e2e redis-7.0.15
+```
+
+严格步骤：
+
+1. 从 `versions/redis-7.0.15/version.yaml` 读取上游仓库和完整 SHA。
+2. shallow fetch 该 SHA，并验证 checkout 后的 `HEAD` 完全一致；不回退 tag。
+3. 应用 `tests/fixtures/redis-7.0.15/0001-ci-version-marker.patch`。
+4. 编译 Redis，检查 `redis-server --version` 含 `7.0.15-ci-patched`。
+5. 启动仅监听 `127.0.0.1` 的临时实例。
+6. 验证 PING、SET/GET 和 INCR。
+7. 运行 PING_INLINE、SET、GET benchmark。
+8. PING_INLINE 必须达到 **10,000 requests/s**；SET/GET 只记录，不设门槛。
+
+任一下载、SHA、补丁、编译、版本标识、启动、功能、解析或性能步骤失败，job 都返回非零。
+
+## 4. 工作流
 
 ```yaml
-# .github/workflows/ci.yml(完整文件)
 name: verify
 
 on:
@@ -57,124 +79,87 @@ concurrency:
 
 jobs:
   verify:
-    name: verify (patch overlay 一键校验)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install pyyaml
-        run: pip install pyyaml --quiet
-      - name: Run verify
-        run: bash tools/verify.sh
+      - uses: actions/checkout@v4
+      - run: pip install pyyaml --quiet
+      - run: bash tools/verify.sh
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config tcl
+      - env:
+          E2E_RESULTS_DIR: ${{ runner.temp }}/redis-e2e-results
+        run: bash tools/verify.sh --e2e redis-7.0.15
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-e2e-results
+          path: ${{ runner.temp }}/redis-e2e-results
 ```
 
----
+典型耗时约 3-5 分钟，主要是 Redis 依赖和源码编译。Public 仓库使用标准 GitHub-hosted
+runner，无需项目 Secrets。
 
-## 4. verify.sh 内部检查细节
+## 5. 结果与证据
 
-```text
-1. 仓根禁放检查:
-   - *.patch 不能在仓根(应移到 versions/<v>/patches/)
-   - Dockerfile / build.sh / Makefile 不能在仓根
-   - src/ storage/ sql/ vendor/ 等目录不能出现在仓根
+E2E 成功后会把以下内容写入 GitHub Job Summary：
 
-2. version.yaml 字段合法:
-   - 顶层:version_id / description / owner / upstream_base.repo+version+commit
-   - patches[] 每项:name / title / owner / type / status
-   - enum:type ∈ {ecological, project}
-   - enum:status ∈ {pending, submitted, accepted}
+- Redis 版本与固定 commit。
+- `7.0.15-ci-patched` 补丁标识。
+- 功能测试结论。
+- PING_INLINE 吞吐量和 10,000 requests/s 门槛。
+- PING_INLINE、SET、GET 原始 CSV。
 
-3. patches[] vs patches/ 一致性:
-   - 遍历 versions/<v>/
-   - 比对 patches[] 数组声明的 .patch 文件名 vs patches/ 实际文件
-   - 不一致 → hard error(数组顺序就是 apply 顺序,漏声明/多文件都报错)
+`actions/upload-artifact@v4` 使用 `if: always()` 上传 `redis-e2e-results`，其中包括：
 
-4. 干净 upstream apply:
-   - 从 version.yaml 读 upstream_base.repo + commit
-   - git clone upstream(失败 → 回退到 tag checkout)
-   - 按 patches[] 数组顺序逐 patch git apply --check + git apply
-   - 单 patch apply 失败降级为 warning(不阻塞,owner 检查)
+- `summary.md`
+- `benchmark.csv`
+- `version.txt`
+- `redis.log`
+
+失败时先看对应 step，再下载 artifact 获取已有诊断文件。
+
+## 6. 本地复现
+
+依赖：
+
+```bash
+sudo apt-get install -y build-essential pkg-config python3 python3-yaml
 ```
 
-**退出码**:
-- `0`:全部通过(可能有 warning)
-- `1`:有 hard 错误(仓根污染 / version.yaml 字段缺失或 enum 非法 / patches[] 与 patches/ 不一致)
+运行：
 
----
+```bash
+bash tests/test-verify-cli.sh
+bash tests/test-ci-contract.sh
+bash tools/verify.sh
+E2E_RESULTS_DIR="$PWD/e2e-results" bash tools/verify.sh --e2e redis-7.0.15
+```
 
-## 5. 关键翻译点(对比 .gitee-ci.yml)
+`e2e-results/` 已加入 `.gitignore`。
 
-1. **image → runs-on**: GitHub Actions 不需要 `image:` 字段,用 `runs-on: ubuntu-latest` 即可
-2. **rules 条件**: `if: $CI_PIPELINE_SOURCE == 'merge_request_event'` → GitHub 的 `on: pull_request`
-3. **apk add bash git**: ubuntu-latest 自带 bash + git,无需装
-4. **6 个 job → 1 个 job**: 所有硬检查合并为 `bash tools/verify.sh`,保留硬性 fail,软警告降级为 stdout 输出
-5. **allow_failure: true → 不存在**: 当前设计下 verify job 任何 patch apply 失败只 warn 不 fail,所以无需 `continue-on-error`
+## 7. 能力边界
 
----
+CI 演示补丁只是可移植的版本标识，不是产品补丁，也不加入 `patches[]` 或 patch 状态机。
 
-## 6. 预计运行时间
+GitHub-hosted `ubuntu-latest` **不验证 KRAIO/DTOE 功能或性能**。真实鲲鹏验证需要：
 
-| 阶段 | 时间 | 备注 |
-|---|---|---|
-| Checkout + pip install pyyaml | ~5s | actions/checkout@v4 已缓存 |
-| verify 仓根禁放 + 字段校验 + patches 一致 | <1s | 纯本地检查 |
-| verify upstream clone + apply | ~25s | 主要花在 `git clone https://github.com/redis/redis --depth 1` |
+- ARM64 鲲鹏服务器。
+- openEuler 和适配内核。
+- `libkraio`、DTOE 相关专用库。
+- GitHub self-hosted runner。
+- 与生产网络拓扑一致的独立性能方案。
 
-**总时长 ~30s**(对比 .gitee-ci.yml 的 1-3 分钟,GitHub runner 普遍更快)。
+当前 PING_INLINE 门槛只用于发现服务未启动、严重退化或 benchmark 输出异常，不能用于容量
+规划，也不构成产品性能承诺。
 
----
+## 8. 常见失败
 
-## 7. 必要权限 / 限制
-
-- **Public 仓库**: 完全免费,无分钟数限制
-- **Private 仓库**: GitHub Free tier 给 2000 分钟/月
-- 不需要任何 GitHub Secrets(verify.sh 走匿名 clone)
-- 如未来要加私有 upstream,需 `GH_TOKEN` + `actions/checkout` 用 token
-
----
-
-## 8. 失败处理
-
-| 失败类型 | 修复路径 |
+| 现象 | 处理 |
 |---|---|
-| `仓根发现 .patch 文件` | 移到 `versions/<v>/patches/` |
-| `version.yaml 缺 upstream_base.repo 或 commit` | 补 yaml 字段 |
-| `patches[] 与 patches/ 不一致` | 把 `patches/*.patch` 文件名同步到 `patches[]`(数组顺序即 apply 顺序) |
-| `patches[] 有 enum 非法` | type 仅 `ecological`/`project`;status 仅 `pending`/`submitted`/`accepted` |
-| `SHA 无效,改用 tag` | upstream commit SHA 写错了,查 git log 拿真实 SHA |
-| `apply 失败(单 patch)` | warning 不阻塞;owner 检查 baseline 漂移 |
-| `clone <repo> 失败` | 几乎都是网络抖动,重跑即可 |
-
----
-
-## 9. 与 v5 规范的对应
-
-- v5 §1 第 7 条铁律: "所有 CI 必跑 4 步:yaml-lint → apply → build → owners,绿才允许 merge"
-- 本仓 1 步 = `verify.sh` 覆盖 yaml 字段校验 + apply;**build 留给消费方**(下游用户在本地跑);**owners 留给 GitHub PR review**(无强制 ≥ 2 签)
-- v5 §3.7 `.gitee-ci.yml` 4 步模板 → 本文件做 GitHub Actions 适配
-- v5 §13 验收指标 3 "CI 4 步接入: 100%(可豁免未启用)":**本仓已在 GitHub 启用,可作为 W2 验收示范**
-
----
-
-## 10. 进一步优化方向(超出 MVP 4 周范围)
-
-- 加 `actions/cache` 缓存 pip(影响小,跳过)
-- upstream clone 改 sparse + shallow + cache,可能再省 10s(影响小,跳过)
-- verify 改 matrix(每个 upstream version 一个 job,失败定位更准)— 当前 1 job 30s 已够用
-- 加 `policy-bot` / `dangerjs` 强约束 PR 模板(本仓 PR 模板已是规范版本)
-
----
-
-## 11. 端到端 PR 验证记录
-
-| 字段 | 值 |
-|---|---|
-| 验证日期 | 2026-07-13 / 2026-07-14 |
-| 验证人 | chaosv598 |
-| 分支 | `feature/test-ci-pr-demo` / `feature/add-0004-rdb-aof-fallback` / `feature/retire-archive` / `feature/simplify-v3-one-version-one-yaml` |
-| 验证目的 | 确认 1 个 verify job 在 PR + post-merge 触发器下全部跑通 |
-| 验证方法 | 提交一个新增 patch 或文档改动,开 PR 到 master,等 CI 绿后 squash merge |
-| 预期 | verify job `queued` → `in_progress` → `success`,post-merge 再跑一次 `success` |
-| 状态 | ✅ 已通过(累计多次,simplify-v3 重新跑通,见 git log) |
-
-> 历史 6 job 矩阵时代(`.gitee-ci.yml` 翻译版)的所有 PR 验证 run ID 已废弃,见 `git log` archive。
+| exact SHA fetch 失败 | 核对 `upstream_base.commit` 是否为官方仓库可达的 40 位 SHA |
+| demo patch apply 失败 | 基于固定 SHA 重新生成 `tests/fixtures/` 补丁 |
+| patched marker 缺失 | 确认编译使用的是临时源码目录而非系统 Redis |
+| Redis readiness 超时 | 查看 artifact 中的 `redis.log` |
+| benchmark 无 PING_INLINE | 查看 `benchmark.csv`，核对 Redis 版本输出格式 |
+| PING_INLINE 低于门槛 | 重跑一次排除 runner 抖动；持续失败时检查日志和 runner 负载 |
