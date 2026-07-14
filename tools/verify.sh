@@ -81,10 +81,18 @@ wait_for_redis() {
 run_e2e() {
     local version="$1"
     local patch="$ROOT/tests/fixtures/$version/0001-ci-version-marker.patch"
-    local results source repo sha actual_sha port ping_rps
+    local results source repo sha actual_sha port ping_rps metadata_output
     local -a metadata
 
-    mapfile -t metadata < <(read_e2e_metadata "$version")
+    if ! metadata_output=$(read_e2e_metadata "$version"); then
+        echo "failed to read E2E metadata for $version" >&2
+        return 1
+    fi
+    mapfile -t metadata <<<"$metadata_output"
+    if [ "${#metadata[@]}" -ne 2 ] || [ -z "${metadata[0]}" ] || [ -z "${metadata[1]}" ]; then
+        echo "failed to read E2E metadata for $version" >&2
+        return 1
+    fi
     repo="${metadata[0]}"
     sha="${metadata[1]}"
     echo "E2E metadata: $version repo=$repo commit=$sha"

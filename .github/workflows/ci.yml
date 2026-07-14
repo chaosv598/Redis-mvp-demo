@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   verify:
-    name: verify (patch overlay 一键校验)
+    name: verify (patch overlay + patched Redis E2E)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
