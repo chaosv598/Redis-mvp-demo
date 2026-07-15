@@ -1,138 +1,138 @@
-﻿# Redis 网络优化特性
+# BoostKit Redis Patch Overlay
 
-## 项目品牌名称
+> BoostKit Redis 性能 / 生态 patch 仓库 —— 遵循 [`BoostKit-Patch-Governance-Spec`](https://github.com/chaosv598/BoostKit-Patch-Governance-Spec) V3 规范
 
-Kunpeng BoostKit Redis
+本仓是规范本身在 **生产业务上的真实落地**,包含:
 
-## 变更通知
+- 2 个 Redis 版本 (`redis-6.0.20` / `redis-7.0.15`) 的 patch overlay
+- 4 个 7.0.15 patch + 1 个 6.0.20 patch
+- 完整 CI 流水线(verifying drift / schema / upstream apply / lint / audit)
+- 自动生成的 `PATCHES.yaml` / `WHITELIST.yaml` / `docs/PATCHES-STATUS.md`
 
-- [2026.03.05]：重构README。
-- [2025.03.30]：新增Redis网络异步优化特性使用指南和版本说明书。
+---
 
-## 项目介绍
+## 📦 Patch 安装方式
 
-本仓库提供 Redis 网络异步优化相关内容，核心能力是 KRAIO（Kunpeng Redis Asynchronous I/O）方案及其配套补丁。
+> ⚠️ 本节与 master 当前状态强一致。CI 在每次 PR 时校验 `README.md` 中列出的 patch 必须真实存在于 `versions/*/patches/`,任何改动 README 也要同步修改。
 
-通过将 Redis 网络 I/O 处理异步化、批量化，可减少系统调用与上下文切换，提升吞吐能力。当前仓库主要覆盖 Redis 6.0.20 和 Redis 7.0.15 两个版本的适配补丁与配套文档。
-
-## 目录结构
-
-```text
-.
-├── README.md
-├── LICENSE.txt
-├── versions/
-│   ├── redis-6.0.20/
-│   │   ├── version.yaml          # 元数据:版本字段 + patches[]
-│   │   └── patches/
-│   │       └── 0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch
-│   └── redis-7.0.15/
-│       ├── version.yaml
-│       └── patches/
-│           ├── 0001-hw-kunpeng-adapt-iouring.patch
-│           ├── 0002-perf-kunpeng-adapt-dtoe.patch
-│           ├── 0003-perf-jemalloc-arm64-pointer-tag-and-gc.patch
-│           └── 0004-perf-rdb-fallback-aof.patch
-├── tools/
-│   └── verify.sh                 # 一键校验(本地 + CI 跑)
-├── .github/workflows/ci.yml      # GitHub Actions:1 个 verify job
-└── docs
-    ├── LICENSE
-    ├── GOVERNANCE.md             # 仓治理说明
-    ├── patch-lifecycle.md        # 3 状态机说明
-    ├── ci-github-actions.md      # CI 配置说明
-    ├── zh                        # 上游产品文档(未动)
-    └── en                        # 上游产品文档(未动)
-```
-
-## 特性介绍
-
-### Redis 6.0.20 网络异步优化
-
-- 特性指南：`docs/zh/redis_network_async_optimization_feature_guide.md`
-- 适配补丁：`versions/redis-6.0.20/patches/0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch`
-- 元数据：`versions/redis-6.0.20/version.yaml`
-
-### Redis 7.0.15 网络异步优化
-
-- 特性指南：`docs/zh/redis_network_async_optimization_feature_guide.md`
-- 适配补丁：`versions/redis-7.0.15/patches/0001-hw-kunpeng-adapt-iouring.patch`
-- 附加补丁：`versions/redis-7.0.15/patches/0002-perf-kunpeng-adapt-dtoe.patch`
-- 元数据：`versions/redis-7.0.15/version.yaml`
-
-### Redis sockmap优化
-
-- 特性指南：`docs/zh/redis_sockmap_optimization_feature_guide.md`
-- 版本说明：`docs/zh/redis_sockmap_optimization_release_notes.md`
-
-## 版本说明
-
-版本说明包含软件版本配套、特性变更与问题说明，详见：
-
-- 中文：`docs/zh/redis_network_async_optimization_release_notes.md`
-
-## 快速入门
-
-以下为 Redis 7.0.15 的示例：
+### 快速开始(以 redis-7.0.15 为例)
 
 ```bash
-# 1) 准备 kraio 并安装库文件
-cd kraio
-make -j4
-cp ./libkraio.so /usr/lib64
-cp ./include/kraio.h /usr/include
+# 1. 克隆本仓 + 上游 Redis
+git clone https://github.com/chaosv598/Redis-mvp-demo.git
+git clone https://github.com/redis/redis.git
+cd redis
 
-# 2) 合入补丁并编译 Redis
-cd /path/to/redis-7.0.15
-cp /path/to/Redis/versions/redis-7.0.15/patches/0001-hw-kunpeng-adapt-iouring.patch .
-patch -p1 < 0001-hw-kunpeng-adapt-iouring.patch
-make distclean
-make -j
+# 2. 切到与 version.yaml upstream_base.commit 对齐的 commit
+git checkout f35f36a265403c07b119830aa4bb3b7d71653ec9
+
+# 3. 顺序 apply patch(顺序由 version.yaml 中 patches[] 数组顺序决定)
+PATCH_DIR=../Redis-mvp-demo/versions/redis-7.0.15/patches
+for p in "$PATCH_DIR"/*.patch; do
+  git apply --check "$p" || { echo "❌ FAIL: $p"; exit 1; }
+  git apply "$p"
+done
+
+# 4. 编译 + 启动
+make -j$(nproc) BUILD_TLS=no
+./src/redis-server --port 6399    # PONG ✓
 ```
 
-完整环境准备、配置与验证步骤详见：
+### redis-7.0.15 已交付 patch 清单
 
-- 中文：`docs/zh/redis_network_async_optimization_feature_guide.md`
+| 序号 | patch | status | 用途 |
+|---|---|---|---|
+| 0001 | [hw-kunpeng-adapt-iouring.patch](versions/redis-7.0.15/patches/0001-hw-kunpeng-adapt-iouring.patch) | submitted | Adapt io_uring for Kunpeng ARM |
+| 0002 | [perf-kunpeng-adapt-dtoe.patch](versions/redis-7.0.15/patches/0002-perf-kunpeng-adapt-dtoe.patch) | whitelisted | Enable dtoe network optimization on Kunpeng(永久下游携带) |
+| 0003 | [perf-jemalloc-arm64-pointer-tag-and-gc.patch](versions/redis-7.0.15/patches/0003-perf-jemalloc-arm64-pointer-tag-and-gc.patch) | submitted | Adapt jemalloc ARM64 pointer-tag + GC |
+| 0004 | [perf-rdb-fallback-aof.patch](versions/redis-7.0.15/patches/0004-perf-rdb-fallback-aof.patch) | submitted | AOF fallback when RDB load fails at startup |
 
-## 学习文档
+### redis-6.0.20 已交付 patch 清单
 
-| 文档 | 说明 |
-|--|--|
-| `docs/zh/redis_network_async_optimization_feature_guide.md` | 中文特性说明、环境部署与验证流程 |
-| `docs/zh/redis_network_async_optimization_release_notes.md` | 中文版本配套与变更说明 |
-| `docs/zh/redis_sockmap_optimization_feature_guide.md` | 中文 Sockmap 优化特性说明 |
-| `docs/zh/redis_sockmap_optimization_release_notes.md` | 中文 Sockmap 优化版本说明 |
+| 序号 | patch | status | 用途 |
+|---|---|---|---|
+| 0001 | [hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch](versions/redis-6.0.20/patches/0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20.patch) | pending | Adapt io_uring for Kunpeng ARM(backport) |
 
-## 兼容性信息
+> 完整状态仪表盘:[docs/PATCHES-STATUS.md](docs/PATCHES-STATUS.md)(自动生成)
+> 白名单视图:[WHITELIST.yaml](WHITELIST.yaml)(自动生成)
 
-| 组件 | 版本 |
-|--|--|
-| OS | openEuler 22.03 LTS SP4 |
-| Redis | 6.0.20 / 7.0.15 |
-| 内核（示例） | kernel-5.10.0-275.0.0.178.oe2203sp4.aarch64.rpm |
+---
 
-## 工具限制与注意事项
+## 🌿 分支与贡献
 
-- 本仓库仅提供 Redis 网络异步优化相关补丁和文档，不直接提供完整 Redis 源码。
-- 使用时需确保系统环境、内核版本与文档中的要求匹配。
-- 实际性能结果与硬件规格、网络拓扑、压测方法强相关，请按文档建议完成环境对齐。
+**`master` 是本仓唯一交付面**——所有 patch overlay 在 master 完整呈现,直接对得上上方的"Patch 安装方式"。
 
-## 贡献声明
+| 分支类型 | 命名 | 用途 |
+|---|---|---|
+| `master` | — | 单一交付面,只接受 PR |
+| `feature/<owner>-<topic>` | 例:`feature/twwang-add-iouring` | 业务自建开发分支 |
+| `hotfix/<owner>-<topic>` | 例:`hotfix/dev-rdb-fallback` | 紧急修复 |
+| `backport/<owner>-to-redis-<v>` | 例:`backport/twwang-to-redis-6.0.20` | 跨版本 backport |
 
-欢迎通过 Issue/PR 反馈问题与改进建议。提交代码前，请确保：
+### 业务开发流程
 
-- 变更与 Redis 网络异步优化主题相关；
-- 文档与补丁版本信息保持一致；
-- 关键变更附带可复现的验证说明。
+```
+1. 从 master 拉 feature/<owner>-<topic> 分支
+2. 编辑 versions/<v>/version.yaml + 添加 patches/*.patch
+3. push → CI 自动跑(sync-check / verify / lint / audit)
+4. CI green → 开 PR 到 master
+5. review → squash merge → master 自动同步 PATCHES.yaml / WHITELIST.yaml / docs/PATCHES-STATUS.md
+6. master CI 再跑一次,确认合入后无 drift
+```
 
-## 免责声明
+**业务分支可临时部署测试**(内部环境),merge 后可删除。详细规范见 [§5 分支管理](https://github.com/chaosv598/BoostKit-Patch-Governance-Spec#5-分支管理)。
 
-- 本仓库内容用于开源技术交流与优化实践参考。
-- 使用者需自行评估在其生产环境中的适配性与风险。
-- 上游 Redis 社区版本变化可能影响本仓库补丁的可用性。
+### master 分支保护(已开启)
 
-## License
+- ✅ Require pull request before merging
+- ✅ Require approvals: ≥1
+- ✅ Require status checks to pass: `ci / verify`
+- ✅ Require linear history(只 squash / rebase)
+- ✅ Include administrators
 
-- 仓库代码 License：见 `LICENSE.txt`
-- 仓库文档 License：见 `docs/LICENSE`
-- 本项目的文档适用CC-BY 4.0许可证，具体请参见LICENSE文件。
+---
+
+## 🛠️ 本地工具链
+
+```bash
+# 提交 PR 前必跑
+python3 tools/sync-manifest.py --check    # PATCHES.yaml 与 version.yaml 一致性
+bash tools/verify.sh                       # schema + upstream apply dry-run + README 交叉校验
+bash tools/upstream-lint.sh versions/*/patches/*.patch   # 风格检查
+python3 tools/whitelist-audit.py --strict  # 白名单审计
+
+# 调试
+python3 tools/sync-manifest.py --report    # 打印人读报表
+```
+
+---
+
+## 📋 仓库结构
+
+```
+.
+├── versions/                    ◀── 开发者手写入口
+│   ├── redis-7.0.15/
+│   │   ├── version.yaml
+│   │   └── patches/*.patch
+│   └── redis-6.0.20/
+│       ├── version.yaml
+│       └── patches/*.patch
+├── PATCHES.yaml                 ◀── 自动生成:全量 patch 清单
+├── WHITELIST.yaml               ◀── 自动生成:白名单 patch 视图
+├── docs/PATCHES-STATUS.md       ◀── 自动生成:人读仪表盘
+├── tools/
+│   ├── sync-manifest.py         # version.yaml → 3 个自动产物
+│   ├── verify.sh                # schema + upstream apply dry-run + README 交叉校验
+│   ├── whitelist-audit.py       # 白名单审计
+│   └── upstream-lint.sh         # patch 风格检查
+└── .github/workflows/ci.yml     # CI:5 步流水线
+```
+
+---
+
+## 🔗 相关链接
+
+- **规范文档**:[BoostKit-Patch-Governance-Spec.md](https://github.com/chaosv598/BoostKit-Patch-Governance-Spec)
+- **规范 demo 仓**:[boostkit-patches-governance-demo](https://github.com/chaosv598/boostkit-patches-governance-demo) —— 最小可运行示例
+- **上游 Redis**:[redis/redis](https://github.com/redis/redis)

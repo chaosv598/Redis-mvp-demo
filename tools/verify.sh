@@ -168,6 +168,29 @@ PYEOF
         errs=$((errs+1))
     fi
 
+    # 2c. README.md 中提到的本 version patch 必须真实存在 (§5.6)
+    if [ -f "$ROOT/README.md" ]; then
+        readme_missing=$(python3 - "$ROOT/README.md" "$vname" "$ROOT" <<'PYEOF'
+import re, sys
+from pathlib import Path
+readme = Path(sys.argv[1]).read_text(encoding="utf-8")
+vname = sys.argv[2]
+root = Path(sys.argv[3])
+mentioned = re.findall(r'versions/[\w.-]+/patches/[\w.-]+\.patch', readme)
+missing = []
+for p in mentioned:
+    if f"/{vname}/patches/" in p and not (root / p).exists():
+        missing.append(p)
+print("\n".join(missing))
+PYEOF
+)
+        if [ -n "$readme_missing" ]; then
+            echo "  ✗ $vname: README.md 引用了不存在的 patch:"
+            echo "$readme_missing" | sed 's/^/      /'
+            errs=$((errs+1))
+        fi
+    fi
+
     npatch=$(echo "$PATCH_NAMES" | grep -c . || echo 0)
     echo "  ✓ $vname: $npatch 个 patch 与 version.yaml 一致"
 
