@@ -1,0 +1,13 @@
+_warning: '⚠️ 由 tools/sync-manifest.py 自动生成,禁止手改。开发者请在 version.yaml 设 status: whitelisted
+  + whitelist_reason'
+generated_at: '2026-07-15T12:01:19+08:00'
+whitelist:
+- id: P-0002-perf-kunpeng-adapt-dtoe
+  name: 0002-perf-kunpeng-adapt-dtoe
+  reason: 'Kunpeng-specific DMA-to-engine HW feature; no upstream equivalent
+
+    interface; reviewed by twwang@boostkit on 2026-06.'
+  applies_to:
+  - redis-7.0.15
+  first_whitelisted: '2026-07-15'
+  next_review: '2026-09-15'

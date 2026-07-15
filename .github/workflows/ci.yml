@@ -1,9 +1,12 @@
-# Patch overlay CI —— 一键 verify
-# 跑 bash tools/verify.sh,PR 触发时执行
-# 历史:本文件早期含 7 个 job(doctor/lint/check-series/check-deps/check-owners/check-apply/check-tag)
-# 现在合并为 1 个 verify job(2026-07-13 simplify-v2)
+# Patch overlay CI —— V3 规范 §8.1 实施
+#
+# 流程:
+#   1. sync-manifest --check (drift 自动修复 §8.3)
+#   2. yaml schema + apply dry-run (verify.sh)
+#   3. upstream-lint (§7.1)
+#   4. whitelist-audit (§4.4)
 
-name: verify
+name: ci
 
 on:
   push:
@@ -16,14 +19,59 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   verify:
-    name: verify (patch overlay 一键校验)
+    name: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install pyyaml
         run: pip install pyyaml --quiet
-      - name: Run verify
+
+      - name: Sync manifest check
+        id: sync-check
+        run: |
+          set +e
+          python3 tools/sync-manifest.py --check
+          rc=$?
+          set -e
+          if [ "$rc" = "0" ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "fix_needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "fix_needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Auto-fix manifest drift
+        if: steps.sync-check.outputs.fix_needed == 'true'
+        run: |
+          python3 tools/sync-manifest.py --write
+          git config user.name "boostkit-bot"
+          git config user.email "boostkit-bot@boostkit"
+          git add PATCHES.yaml WHITELIST.yaml docs/PATCHES-STATUS.md
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "manifest: auto-sync from version.yaml [skip ci]"
+            git push
+          fi
+
+      - name: Verify (schema + apply dry-run)
         run: bash tools/verify.sh
+
+      - name: Upstream lint
+        if: hashFiles('versions/*/patches/*.patch') != ''
+        run: bash tools/upstream-lint.sh versions/*/patches/*.patch
+
+      - name: Whitelist audit
+        run: python3 tools/whitelist-audit.py --strict

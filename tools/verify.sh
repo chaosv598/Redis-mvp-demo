@@ -91,7 +91,7 @@ if not isinstance(ub, dict) or not ub.get("commit"): errs.append("missing upstre
 if not isinstance(patches, list) or not patches:
     errs.append("patches[] must be a non-empty array")
 
-# patch 字段校验
+# patch 字段校验 (V3 规范 §1.3 / §1.4)
 patch_names = []
 for i, p in enumerate(patches):
     if not isinstance(p, dict):
@@ -103,8 +103,16 @@ for i, p in enumerate(patches):
     s = p.get("status", "")
     if t not in ("ecological", "project"):
         errs.append(f"{n}.type={t!r} not in (ecological, project)")
-    if s not in ("pending", "submitted", "accepted"):
-        errs.append(f"{n}.status={s!r} not in (pending, submitted, accepted)")
+    if s not in ("pending", "submitted", "accepted", "rejected", "whitelisted"):
+        errs.append(f"{n}.status={s!r} not in (pending, submitted, accepted, rejected, whitelisted)")
+    # V3: upstream_pr[] (数组,不再用 pr)
+    if s in ("submitted", "accepted") and not p.get("upstream_pr"):
+        errs.append(f"{n}.status={s} but upstream_pr[] empty (§1.4)")
+    # V3: whitelisted 必须带 ≥30 字符理由
+    if s == "whitelisted":
+        reason = (p.get("whitelist_reason") or "").strip()
+        if len(reason) < 30:
+            errs.append(f"{n}.status=whitelisted but whitelist_reason <30 chars (§1.4)")
 
 # 输出 JSON 供 bash 用
 out = {

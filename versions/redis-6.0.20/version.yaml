@@ -12,5 +12,7 @@ patches:
     owner: huyizhen@boostkit
     type: ecological
     status: pending
+    upstream_pr: []
+    whitelist_reason: ""
     note: Will submit upstream after native io_uring support lands in 7.0
     dependence: []

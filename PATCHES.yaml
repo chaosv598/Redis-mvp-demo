@@ -1,0 +1,72 @@
+_warning: ⚠️ 由 tools/sync-manifest.py 自动生成,禁止手改。开发者请编辑 versions/<v>/version.yaml
+manifest_version: 1
+generated_at: '2026-07-15T12:01:19+08:00'
+generated_by: tools/sync-manifest.py
+patches:
+- id: P-0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20
+  name: 0001-hw-kunpeng-adapt-iouring-on-6.0.15-6.0.20
+  title: Adapt io_uring for Kunpeng ARM across 6.0.15 to 6.0.20
+  owner: huyizhen@boostkit
+  category: ecological
+  status: pending
+  upstream_pr: []
+  whitelist: false
+  whitelist_reason: ''
+  applies_to:
+  - version: redis-6.0.20
+    commit: de0d9632b52849d9b7ea52408b1d681d771c5b46
+- id: P-0001-hw-kunpeng-adapt-iouring
+  name: 0001-hw-kunpeng-adapt-iouring
+  title: Adapt io_uring for Kunpeng ARM (2026 onboard-demo 修订)
+  owner: twwang@boostkit
+  category: ecological
+  status: submitted
+  upstream_pr:
+  - https://github.com/redis/redis/pull/TBD
+  whitelist: false
+  whitelist_reason: ''
+  applies_to:
+  - version: redis-7.0.15
+    commit: f35f36a265403c07b119830aa4bb3b7d71653ec9
+- id: P-0002-perf-kunpeng-adapt-dtoe
+  name: 0002-perf-kunpeng-adapt-dtoe
+  title: Enable dtoe (DMA-to-engine) network optimization on Kunpeng
+  owner: twwang@boostkit
+  category: project
+  status: whitelisted
+  upstream_pr: []
+  whitelist: true
+  whitelist_reason: 'Kunpeng-specific DMA-to-engine HW feature; no upstream equivalent
+
+    interface; reviewed by twwang@boostkit on 2026-06.
+
+    '
+  applies_to:
+  - version: redis-7.0.15
+    commit: f35f36a265403c07b119830aa4bb3b7d71653ec9
+- id: P-0003-perf-jemalloc-arm64-pointer-tag-and-gc
+  name: 0003-perf-jemalloc-arm64-pointer-tag-and-gc
+  title: Adapt jemalloc 5.2.1 ARM64 pointer-tag and GC strategy optimize
+  owner: yinbin@boostkit
+  category: ecological
+  status: submitted
+  upstream_pr:
+  - https://github.com/redis/jemalloc/pull/TBD
+  whitelist: false
+  whitelist_reason: ''
+  applies_to:
+  - version: redis-7.0.15
+    commit: f35f36a265403c07b119830aa4bb3b7d71653ec9
+- id: P-0004-perf-rdb-fallback-aof
+  name: 0004-perf-rdb-fallback-aof
+  title: AOF fallback when RDB load fails at startup
+  owner: dev@boostkit
+  category: ecological
+  status: submitted
+  upstream_pr:
+  - https://github.com/redis/redis/pull/TBD
+  whitelist: false
+  whitelist_reason: ''
+  applies_to:
+  - version: redis-7.0.15
+    commit: f35f36a265403c07b119830aa4bb3b7d71653ec9
