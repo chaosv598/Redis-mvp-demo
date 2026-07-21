@@ -60,9 +60,11 @@ do_build() {
     up_ver=$(echo "$meta" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
     patches=$(echo "$meta" | python3 -c 'import json,sys;print("\n".join(json.load(sys.stdin)["patches"]))')
 
+    local patch_count
+    patch_count=$(echo "$meta" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["patches"]))')
     log "version:   $ver"
     log "upstream:  $up_repo @ $up_commit ($up_ver)"
-    log "patches:   $(echo "$patches" | wc -l) 个"
+    log "patches:   $patch_count 个"
 
     local src_dir="$WORK/$ver/src"
     local bin_dir="$WORK/$ver/bin"

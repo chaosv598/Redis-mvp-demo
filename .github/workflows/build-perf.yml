@@ -29,8 +29,9 @@ jobs:
     name: detect changed versions
     runs-on: ubuntu-latest
     outputs:
-      redis_7_0_15: ${{ steps.filter.outputs.redis_7_0_15 }}
-      redis_6_0_20: ${{ steps.filter.outputs.redis_6_0_20 }}
+      redis_7_0_15:      ${{ steps.filter.outputs.redis_7_0_15 }}
+      redis_6_0_20:      ${{ steps.filter.outputs.redis_6_0_20 }}
+      redis_demo_vanilla: ${{ steps.filter.outputs.redis_demo_vanilla }}
       versions: ${{ steps.build-versions.outputs.versions }}
     steps:
       - uses: actions/checkout@v4
@@ -42,18 +43,21 @@ jobs:
               - 'versions/redis-7.0.15/**'
             redis_6_0_20:
               - 'versions/redis-6.0.20/**'
+            redis_demo_vanilla:
+              - 'versions/redis-demo-vanilla/**'
       - id: build-versions
         name: build matrix list
         run: |
-          versions='[]'
-          [ "${{ steps.filter.outputs.redis_7_0_15 }}" = 'true' ] && versions='["redis-7.0.15"]'
-          if [ "${{ steps.filter.outputs.redis_6_0_20 }}" = 'true' ]; then
-            if [ "$versions" = '[]' ]; then
-              versions='["redis-6.0.20"]'
-            else
-              versions='["redis-7.0.15","redis-6.0.20"]'
-            fi
-          fi
+          # 拼 JSON 数组给 matrix,避免 dorny/paths-filter 输出是 bool 时人工
+          # 硬编码 if-else 三路(N 路缩放也麻烦),改用 append helper
+          list=""
+          append() {
+            if [ -z "$list" ]; then list="\"$1\""; else list="$list, \"$1\""; fi
+          }
+          [ "${{ steps.filter.outputs.redis_7_0_15 }}" = 'true' ]       && append 'redis-7.0.15'
+          [ "${{ steps.filter.outputs.redis_6_0_20 }}" = 'true' ]       && append 'redis-6.0.20'
+          [ "${{ steps.filter.outputs.redis_demo_vanilla }}" = 'true' ] && append 'redis-demo-vanilla'
+          if [ -z "$list" ]; then versions='[]'; else versions="[$list]"; fi
           echo "versions=$versions" >> "$GITHUB_OUTPUT"
           echo "matrix will be: $versions"
 
@@ -105,7 +109,7 @@ jobs:
       - name: Build patched redis
         id: build
         run: |
-          bash -x tools/build-perf.sh build "${{ matrix.version }}" 2>&1 | tail -100
+          bash tools/build-perf.sh build "${{ matrix.version }}"
 
       - name: Run memtier_benchmark
         id: bench

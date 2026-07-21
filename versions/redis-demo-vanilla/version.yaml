@@ -1,0 +1,24 @@
+version_id: redis-demo-vanilla
+description: |
+  Redis 7.2.4 上游基线,无任何 patch overlay。
+  目的:作为 build-perf CI 链路的"端到端 demo"——证明 clone → apply →
+  make → redis-benchmark → summary 这条 pipeline 本身能跑通。
+
+  为什么独立于 redis-7.0.15 / redis-6.0.20:
+  - 7.0.15/6.0.20 上的 Kunpeng io_uring patch (0001) 引用了华为
+    内部 libkraio (<kraio.h> + -lkraio),该头文件不在 OSS 上游副本
+    中且 libkraio.so 仅随鲲鹏 BoostKit 镜像分发。GitHub-hosted
+    ubuntu-22.04 runner 不具备这些依赖,导致 build 步骤必然失败——
+    这不是脚本 bug,是 patch 设计层面的"只在特定硬件环境可编译"约束。
+  - redis-demo-vanilla 用 7.2.4 干净上游版本绕过该问题,只验证
+    build-perf pipeline 本身是否端到端可用,作为正式 PR 的 smoke
+    gate。
+  - 真正的 patch 兼容性验证仍应在 verify.sh 干跑 + 鲲鹏 runner
+    实跑两条腿共同把关。
+owner: chaosv598@boostkit
+upstream_base:
+  repo: https://github.com/redis/redis
+  version: 7.2.4
+  commit: d2c8a4b91e8c0e6aefd1f5bc0bf582cddbe046b7
+
+patches: []
