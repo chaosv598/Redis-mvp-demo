@@ -15,6 +15,20 @@
 - **典型耗时**:首次 2.5 min,带 cache 后 1.8 min,纯 docs PR 0 秒
 - **与 verify 的关系**:verify(dry-run,~30s)+ build-perf(真编真跑,~2min)= 互补,不替代
 
+**Demo 版本**: `versions/redis-demo-vanilla/`(Redis 7.2.4 干净上游,`patches: []`)
+是用来"打通 pipeline"的端到端 demo——证明 clone → apply → make → bench → report
+链路本身可用,与 7.0.15/6.0.20 上 patch 0001 引用内部 libkraio 在 GitHub runner
+上必然失败的问题解耦。patch 兼容性验证仍由 verify.sh 干跑 + 鲲鹏 runner 实跑
+共同把关。
+
+**Demo patch 版本**: `versions/redis-7.2.4/`(Redis 7.2.4 + boostkit patch 0004 的
+7.2.4 端口,RDB→AOF fallback)。另一个端到端用例:在 PR 流程里真的应用一个
+boostkit 风格的 patch,验证 pipeline 能跑通一个有 patch 改动的版本。
+跟 `redis-demo-vanilla` 的差别:那个是"链路 demo"(无 patch),这个是
+"链路 + 真实 patch demo"(有 patch,但 patch 不引入外部依赖,能 stock build)。
+
+---
+
 ---
 
 ## 1. 完整链路

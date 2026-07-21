@@ -83,13 +83,20 @@ owner = m.get("owner", "")
 ub = m.get("upstream_base", {}) or {}
 patches = m.get("patches", []) or []
 
+is_demo = bool(m.get("demo", False))
+
 # 顶层枚举:version_id 非空;upstream_base.repo/commit 必填
 errs = []
+demo_flags = []
 if not top: errs.append("missing version_id")
 if not isinstance(ub, dict) or not ub.get("repo"): errs.append("missing upstream_base.repo")
 if not isinstance(ub, dict) or not ub.get("commit"): errs.append("missing upstream_base.commit")
-if not isinstance(patches, list) or not patches:
-    errs.append("patches[] must be a non-empty array")
+if not isinstance(patches, list):
+    errs.append("patches[] must be an array")
+elif not patches and not is_demo:
+    errs.append("patches[] must be a non-empty array (or set top-level demo: true for patchless versions)")
+elif not patches and is_demo:
+    demo_flags.append("demo version, patches=[] (skipping apply-validation below)")
 
 # patch 字段校验 (V3 规范 §1.3 / §1.4)
 patch_names = []
@@ -124,6 +131,8 @@ out = {
     "commit": (ub or {}).get("commit", ""),
     "patch_names": patch_names,
     "patches": patches,
+    "is_demo": is_demo,
+    "demo_flags": demo_flags,
     "errs": errs,
 }
 print(json.dumps(out))
@@ -150,22 +159,35 @@ PYEOF
     SHA=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['commit'])" "$read_vars")
     VERSION=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['version'])" "$read_vars")
     PATCH_NAMES=$(python3 -c "import json,sys; print('\n'.join(json.loads(sys.argv[1])['patch_names']))" "$read_vars")
+    IS_DEMO=$(python3 -c "import json,sys; print('true' if json.loads(sys.argv[1]).get('is_demo') else 'false')" "$read_vars")
+    if [ "$IS_DEMO" = "true" ]; then
+        # demo 版本把 demo_flags 拼成一行(行尾换行),前面已经标了 demo
+        demo_msg=$(python3 -c "import json,sys; print(', '.join(json.loads(sys.argv[1]).get('demo_flags',[])))" "$read_vars")
+        [ -n "$demo_msg" ] && echo "  ⚠ $vname: $demo_msg"
+    fi
 
     # 2a. patches/ 目录与数组一致性(必须多不能少,按数组顺序)
+    #      demo 版本无 patch, 跳过此检查(但 ls 仍列 patches/ 里的所有 *.patch
+    #      文件,过滤掉非 .patch)
     actual=$(ls "$patches_dir"/*.patch 2>/dev/null | xargs -n1 basename 2>/dev/null | sort)
-    expected=$(echo "$PATCH_NAMES" | awk '{print $0".patch"}' | sort)
-    if [ "$actual" != "$expected" ]; then
+    # filter empty lines first (awk 永远会输出 .patch 即使 $0 空)
+    expected=$(echo "$PATCH_NAMES" | grep . | awk '{print $0".patch"}' | sort)
+    if [ -z "$actual" ] && [ -z "$expected" ] && [ "$IS_DEMO" = "true" ]; then
+        : # demo 版本允许空
+    elif [ "$actual" != "$expected" ]; then
         echo "  ✗ $vname: patches[] 与 patches/ 不一致"
         diff <(echo "$expected") <(echo "$actual") | head -10 | sed 's/^/      /'
         errs=$((errs+1))
         continue
     fi
 
-    # 2b. patches/ 不能有多余 .patch(避免漏声明)
-    extras=$(comm -23 <(echo "$actual") <(echo "$expected"))
-    if [ -n "$extras" ]; then
-        echo "  ✗ $vname: patches/ 有未声明的 .patch: $extras"
-        errs=$((errs+1))
+    # 2b. patches/ 不能有多余 .patch(避免漏声明) — demo 跳过
+    if [ "$IS_DEMO" != "true" ]; then
+        extras=$(comm -23 <(echo "$actual") <(echo "$expected"))
+        if [ -n "$extras" ]; then
+            echo "  ✗ $vname: patches/ 有未声明的 .patch: $extras"
+            errs=$((errs+1))
+        fi
     fi
 
     # 2c. README.md 中提到的本 version patch 必须真实存在 (§5.6)
@@ -192,6 +214,11 @@ PYEOF
     fi
 
     npatch=$(echo "$PATCH_NAMES" | grep -c . || echo 0)
+    if [ "$IS_DEMO" = "true" ]; then
+        echo "  ✓ $vname (demo): 0 个 patch,跳过 upstream apply 验证"
+        vcount=$((vcount+1))
+        continue
+    fi
     echo "  ✓ $vname: $npatch 个 patch 与 version.yaml 一致"
 
     # 3. 干净 upstream apply
